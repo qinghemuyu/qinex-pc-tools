@@ -158,7 +158,7 @@ void Application::CopyComputerAddress() {
 
 void Application::NextStep() {
     if (page == 0) { SelectPage(running && state.hasPosition && Age(GetTickCount64(), state.lastPacketMs) <= static_cast<uint64_t>(settings.timeoutMs) ? 2 : 1); return; }
-    if (page == 3 || page == 4) { SelectPage(0); return; }
+    if (page == 3 || page == 4) { ReturnToHost(); return; }
     Settings candidate; if (!ReadPage(candidate, page)) return;
     if (page == 1) {
         Apply(false); if (!running && !Start()) return;
@@ -173,7 +173,7 @@ void Application::NextStep() {
     if (!Checked(ID_ALIGNMENT_CHECK)) {
         notice = W(L"请先把光标移到四角和中心，检查方向与行程，确认后勾选下方检查项。", L"先检查四角、中心、方向和行程，确认后勾选检查项喵。"); statusAt = 0; SetFocus(Item(ID_ALIGNMENT_CHECK)); return;
     }
-    Apply(false); settings.setupComplete = true; MarkDirty(); CommitDraft(2); Apply(true); if (!dirty) SelectPage(0);
+    Apply(false); settings.setupComplete = true; MarkDirty(); CommitDraft(2); Apply(true); if (!dirty) ReturnToHost();
 }
 
 bool Application::HandleUiCommand(int id, int event) {
@@ -482,7 +482,7 @@ void Application::ShowHelp() {
         W(L"让指针的四角与手机画面的四角一致", L"让指针与手机画面的四角一致喵"), W(L"基础对齐后仍有偏差，再进行精细校准", L"基础对齐后还有偏差，再精细校准喵"), W(L"外观立即预览，其余设置应用后生效", L"外观立即预览，其余设置应用后生效喵")
     };
     const wchar_t* help[] = {
-        W(L"首次使用：设备 → 画面 → 检查四角与中心 → 保存并使用。\n\n配置完成后，用首页的暂停 / 恢复控制指针显示。暂停时仍保持连接。最小化后可从托盘重新打开控制窗口。关闭窗口会退出程序。\n\n“演示指针”运行独立测试，结束后恢复真实设备，不会覆盖设备和校准。", L"首次按设备、画面、检查、保存的顺序完成喵。\n\n首页暂停 / 恢复只控制显示，连接仍然保持。最小化后可从托盘重新打开，关闭窗口则退出喵。\n\n演示是独立测试，结束后恢复真实设备和校准喵。"),
+        W(L"首次使用：设备 → 画面 → 检查四角与中心 → 保存并使用。\n\n配置完成后，用首页的暂停 / 恢复控制指针显示。暂停时仍保持连接。关闭设置窗口后仍在后台运行：独立版从托盘恢复，合并版从 Link 顶部“光标设置”恢复。退出请使用 Link 或独立版的托盘菜单。\n\n“演示指针”运行独立测试，结束后恢复真实设备，不会覆盖设备和校准。", L"首次按设备、画面、检查、保存的顺序完成喵。\n\n首页暂停 / 恢复只控制显示，连接仍然保持。关闭设置后仍在后台运行喵；独立版点托盘、合并版点 Link 顶部“光标设置”回来，退出请用托盘菜单。\n\n演示是独立测试，结束后恢复真实设备和校准喵。"),
         W(L"P4：打开板载页“网络 → VP 光标（PC / App）”，启用 VP 光标。在“高级”中填入上方电脑地址，关闭“兼容旧版 App”和“自动发现接收端”。多个地址时选择连接 P4 所在网络的网卡。\n\n“P4 地址”填板子地址，不知道时先留空。点击开始连接并移动光标，收到数据后可绑定这台设备。\n\nS3：在本机 QInEX 开启 JSON v2 指针，目标 127.0.0.1，默认端口 6533。\n\n没有数据时，先检查两端设置和电脑网络。只有实际允许的接收来源才会显示。", L"P4 在“网络 → VP 光标（PC / App）”启用 VP 光标喵。“高级”里填电脑地址，关闭“兼容旧版 App”和“自动发现接收端”。多个网卡时选与 P4 相连的网络。\n\nP4 地址填板子地址，不知道就先留空。连接后移动光标，收到数据再绑定。\n\nS3 在 QInEX 开启 JSON v2，目标 127.0.0.1、默认端口 6533 喵。\n\n没数据时先核对设置和网络。"),
         W(L"采集卡全屏输出：选择采集设备和输出显示器，点击“启动全屏”。默认自动选择低延迟规格；精确规格只列出设备真实报告的分辨率、刷新率和像素格式。\n\n纯色背景全屏：给视频融合器提供纯色与光标，不打开采集卡。选择输出屏和背景色后启动，再由融合器抠除该颜色。\n\n两种全屏底部都会显示运行指标和当前快捷键。显隐 HUD、范围校准和退出键可在“外观与快捷键”中自定义；校准时用 Enter 应用、Esc 取消。\n\n外部预览窗口可框住完整手机画面；有黑边、裁剪或旋转时再使用高级设置。", L"采集卡全屏时选采集设备和显示器再启动喵；精确规格只列设备真实支持的模式。\n\n纯色背景全屏给融合器输出纯色和光标，不打开采集卡喵；选屏幕和颜色后，由融合器抠除背景。\n\n两种全屏底部都有运行指标和当前快捷键喵。HUD、范围校准和退出键可在外观设置中自定义；校准时 Enter 应用、Esc 取消。"),
         W(L"采集卡和融合器模式优先使用快捷范围校准：全屏时触发“调整光标范围”，直接拖动边框匹配光标应到达的范围，Enter 应用。移动光标检查四角和中心，满意后保存。\n\n纯色融合输出没有手机画面，请对照融合器最终画面调整。该快捷键可在“外观与快捷键”中自定义。\n\n采集画面仍有局部偏差时才做九点精调：打开手机系统触点显示，逐点取样；冻结截图后点击真实触点中心并确认。", L"采集卡和融合器都先用快捷范围校准喵：拖边框匹配范围，Enter 应用，检查四角和中心后保存。\n\n纯色融合没有手机画面，请对照融合器最终画面调整喵。范围校准键可在外观设置中自定义。采集画面还有局部偏差时，再用九点精调。"),
@@ -503,9 +503,11 @@ void Application::SelectPage(int p) {
     const bool batch = main && IsWindowVisible(main);
     if (batch) SendMessageW(main, WM_SETREDRAW, FALSE, 0);
     page = nextPage;
-    RECT outer{0, 0, Px(1064), Px(page == 5 ? 744 : 704)};
-    AdjustWindowRectEx(&outer, static_cast<DWORD>(GetWindowLongPtrW(main, GWL_STYLE)), FALSE, 0);
-    SetWindowPos(main, nullptr, 0, 0, outer.right - outer.left, outer.bottom - outer.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    if (!hostWindow) {
+        RECT outer{0, 0, Px(1064), Px(page == 5 ? 744 : 704)};
+        AdjustWindowRectEx(&outer, static_cast<DWORD>(GetWindowLongPtrW(main, GWL_STYLE)), FALSE, 0);
+        SetWindowPos(main, nullptr, 0, 0, outer.right - outer.left, outer.bottom - outer.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
     for (auto& c : controls) ShowWindow(c.hwnd, c.page == -1 || c.page == page ? SW_SHOW : SW_HIDE);
     const wchar_t* titles[] = {W(L"指针状态", L"指针状态喵"), W(L"连接设备", L"连接设备喵"), W(L"画面与全屏", L"画面与全屏喵"), W(L"校准光标", L"校准光标喵"), W(L"外观与快捷键", L"外观与快捷键喵"), W(L"Android 系统光标", L"Android 系统光标喵")};
     Set(ID_PAGE_TITLE, titles[page]);
@@ -525,7 +527,7 @@ void Application::SelectPage(int p) {
     ShowWindow(Item(ID_APPLY), page == 1 || page == 2 || page == 4 ? SW_SHOW : SW_HIDE);
     ShowWindow(Item(ID_NEXT), page > 0 && page < 5 ? SW_SHOW : SW_HIDE);
     for (int id : std::initializer_list<int>{ID_SAVE, ID_SAVE_STATE, ID_STATUS}) ShowWindow(Item(id), page == 5 ? SW_HIDE : SW_SHOW);
-    Set(ID_NEXT, page == 1 ? W(L"连接并继续", L"连接并继续喵") : page == 2 ? W(L"保存并使用", L"保存并使用喵") : W(L"回首页", L"回首页喵"));
+    Set(ID_NEXT, page == 1 ? W(L"连接并继续", L"连接并继续喵") : page == 2 ? W(L"保存并使用", L"保存并使用喵") : hostWindow ? W(L"返回上位机", L"返回上位机喵") : W(L"回首页", L"回首页喵"));
     UpdateVisibility(); UpdatePresentation();
     InvalidateRect(main, nullptr, FALSE);
     for (int i = 0; i < kPageCount; ++i) InvalidateRect(Item(ID_NAV_FIRST + i), nullptr, FALSE);
@@ -1067,12 +1069,18 @@ void Application::BuildControls() {
     scale = std::min(GetDpiForWindow(main) / 96.0, std::max(0.65,
         std::min((mi.rcWork.bottom - mi.rcWork.top - 70) / 744.0,
                  (mi.rcWork.right - mi.rcWork.left - 40) / 1064.0)));
+    if (hostWindow) {
+        RECT bounds{}; GetClientRect(main, &bounds);
+        scale = std::min(bounds.right / 1064.0, bounds.bottom / 744.0);
+    }
     font = CreateFontW(-Px(15), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei UI");
     headingFont = CreateFontW(-Px(24), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei UI");
     uiSmallFont = CreateFontW(-Px(12), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei UI");
     uiStrongFont = CreateFontW(-Px(15), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei UI");
-    RECT outer{0, 0, Px(1064), Px(704)}; AdjustWindowRectEx(&outer, static_cast<DWORD>(GetWindowLongPtrW(main, GWL_STYLE)), FALSE, 0);
-    SetWindowPos(main, nullptr, 0, 0, outer.right - outer.left, outer.bottom - outer.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    if (!hostWindow) {
+        RECT outer{0, 0, Px(1064), Px(704)}; AdjustWindowRectEx(&outer, static_cast<DWORD>(GetWindowLongPtrW(main, GWL_STYLE)), FALSE, 0);
+        SetWindowPos(main, nullptr, 0, 0, outer.right - outer.left, outer.bottom - outer.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
     const wchar_t* names[] = {L"总览\n状态与快捷操作", L"设备连接\nP4 / S3", L"画面输出\n采集 · 覆盖 · 融合",
         L"光标校准\n范围与九点精调", L"个性设置\n外观与快捷键", L"手机工具\nAndroid 系统光标"};
     for (int i = 0; i < kPageCount; ++i)
@@ -1415,7 +1423,7 @@ void Application::BuildControls() {
     Label(W(L"快捷键", L"快捷键喵"), 26, 277, 120, 4);
     Button(ID_HOTKEYS, W(L"自定义快捷键…", L"自定义快捷键喵…"), 160, 270, 196, 4);
     Label(W(L"可分别设置暂停、HUD、范围校准和退出全屏。", L"可分别设置暂停、HUD、范围校准和退出全屏喵。"), 376, 276, 476, 4);
-    Check(ID_RESUME_LAUNCH, W(L"启动时连接上次设备", L"启动时连接上次设备喵"), settings.resumeOnLaunch, 26, 314, 390, 4);
+    Check(ID_RESUME_LAUNCH, hostWindow ? W(L"随上位机启动连接上次设备", L"随上位机连接上次设备喵") : W(L"启动时连接上次设备", L"启动时连接上次设备喵"), settings.resumeOnLaunch, 26, 314, 390, 4);
     Check(ID_ANIME, L"二次元模式（即时切换）", settings.anime, 436, 314, 416, 4);
     Add(L"BUTTON", W(L"设备与画面场景", L"设备与画面场景喵"), BS_GROUPBOX, 0, 26, 365, 826, 97, 4);
     Label(W(L"为不同设备、采集卡或预览布局保留一份配置。", L"给不同设备和预览布局保留配置喵。"), 46, 393, 470, 4, 44);

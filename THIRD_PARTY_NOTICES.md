@@ -11,6 +11,10 @@
 | Eclipse Temurin OpenJDK 17 | Android 覆盖包签名所需的精简 Java 运行时 | GPL-2.0 with Classpath Exception 及随发行包提供的第三方声明；[官方说明](https://adoptium.net/docs/faq) |
 | PolyForm Noncommercial 1.0.0 | 项目采用的许可证原文 | [官方文本](https://polyformproject.org/licenses/noncommercial/1.0.0.txt) |
 
+## 应用图标
+
+`qinex-link/res/app.ico` 由维护者提供的瑞幸咖啡（luckin coffee）标识图片等比转换而来。该品牌名称与标识的相关权利归其权利人所有，不属于本项目原创资源，也不适用本项目对原创内容的 PolyForm 许可；使用该图标不表示品牌方对本软件的关联或背书。
+
 ## Android 完整版的依赖
 
 源码仓库通过本地路径和下载脚本准备依赖，不将 Android/Java 二进制作为源码文件跟踪。启用 `QINEX_WITH_ANDROID_TOOLS` 时，构建脚本会把所需文件、NOTICE 与 Java `legal/` 目录内容嵌入 EXE；运行后可在手机工具的诊断详情中导出依赖清单并查看相关文件。

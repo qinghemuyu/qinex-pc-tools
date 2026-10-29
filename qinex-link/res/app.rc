@@ -2,3 +2,5 @@
 // ID 1 是首个图标资源 → Explorer 取它作 exe 文件图标;代码里用 IDI_APPICON 显式加载。
 #define IDI_APPICON 1
 IDI_APPICON ICON "app.ico"
+// 同一个 RC 编译单元分配图像资源 ID，避免两个独立 .res 的 ICON ID 冲突。
+101 ICON "app.ico"

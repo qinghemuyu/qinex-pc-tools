@@ -4,11 +4,15 @@
     [switch]$Test,
     [string]$AdbDirectory = '',
     [string]$AndroidBuildTools = '',
-    [string]$AndroidJdk = ''
+    [string]$AndroidJdk = '',
+    [string]$BuildDirectory = ''
 )
 $ErrorActionPreference = 'Stop'
 $mode = if ($AndroidTools) { 'android' } else { 'desktop' }
 $buildPath = Join-Path $PSScriptRoot "build/$($Project.ToLowerInvariant())-$mode"
+if ($BuildDirectory) {
+    $buildPath = if ([System.IO.Path]::IsPathRooted($BuildDirectory)) { $BuildDirectory } else { Join-Path $PSScriptRoot $BuildDirectory }
+}
 $configureArgs = @('-S', $PSScriptRoot, '-B', $buildPath, '-G', 'Visual Studio 17 2022', '-A', 'x64',
     "-DQINEX_BUILD_LINK=$($Project -ne 'Pointer')", "-DQINEX_BUILD_POINTER=$($Project -ne 'Link')",
     "-DQINEX_WITH_ANDROID_TOOLS=$($AndroidTools.IsPresent)", '-DBUILD_TESTING=ON')

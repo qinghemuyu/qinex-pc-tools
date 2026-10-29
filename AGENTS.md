@@ -25,7 +25,7 @@
 
 本仓库是两个 **Windows x64、MSVC、C++17** 工程：
 
-- **QInEX-Link**：捕获 PC 原始键鼠，经 UART 转发至 P4 Mode C，支持可选 kmboxNET 本机输入；映射和手机触摸输出由板端完成。
+- **QInEX-Link**：捕获 PC 原始键鼠，经 UART 转发至 P4 Mode C，支持可选 kmboxNET 本机输入；映射和手机触摸输出由板端完成。内置完整 Pointer 桌面模块，顶部按钮在同一窗口切换设备连接与光标设置，统一托盘与退出。
 - **QInEX Pointer**：接收 UDP 光标状态，完成校准、坐标转换、桌面显示、采集预览和融合输出；可选编译 Android 手机工具。
 
 优先保证输入保真、可靠释放、低延迟、已有设备兼容，再改善易用性。未经任务授权，不把修复扩展为框架替换、全仓格式化、协议重做、跨平台移植或产品合并。
@@ -65,6 +65,7 @@ package.ps1            默认桌面版的本地打包入口
 | Pointer 网络 | `udp_receiver.cpp` |
 | Pointer 采集与显示 | `capture_output.cpp`、`directshow_capture.cpp`、`capture_presenter.cpp` |
 | Pointer UI 与协作 | `main.cpp`、`app_ui.cpp`、`calibration.cpp`、`desktop_helpers.cpp` |
+| Pointer 嵌入生命周期 | `pointer_runtime.h`、`main.cpp`；独立入口为 `standalone.cpp` |
 | Pointer 用户数据 | `settings.h`、`profile_store.h` |
 | Android 进程与设备操作 | `tool_process.cpp`、`adb_client.cpp`、`android_tools_service.cpp` |
 
@@ -232,7 +233,7 @@ git diff --check
 
 文档/仓库检查脚本需要 Python；这不改变默认桌面程序构建不依赖 Python 的约定。Android 构建命令和依赖参数直接采用构建指南中的完整示例，不写维护者本机路径。
 
-现有 CTest 包括 `link_protocol`、`pointer_core_behavior`、`pointer_capture_diagnostics`，启用 Android 后增加 `pointer_android_behavior`；单项目构建仅运行该项目用例。当前 GitHub CI 只验证默认桌面组合，不能将其通过说成 Android 完整版通过。
+现有 CTest 包括 `link_protocol`、`link_embedded_ui`、`pointer_core_behavior`、`pointer_capture_diagnostics`、`pointer_embedded_runtime`，启用 Android 后增加 `pointer_android_behavior`。Link 单项目构建也验证其内置 Pointer 模块。当前 GitHub CI 只验证默认桌面组合，不能将其通过说成 Android 完整版通过。
 
 修复可自动验证的行为缺陷时，优先补覆盖实际失败的回归测试；不要为简单文案添加镜像实现的测试，也不要为了变绿删除断言、降低期望或禁用用例。测试使用独立临时目录，避免污染用户配置。
 

@@ -7,6 +7,11 @@
 #include "netserver.h"
 #include "performance.h"
 #include "taskbar_widget.h"
+#include "pointer_runtime.h"
+#include "glass_theme.h"
+#include <dwmapi.h>
+#include <commctrl.h>
+#include <uxtheme.h>
 #include <algorithm>
 #include <cmath>
 #include <shellapi.h>
@@ -104,24 +109,30 @@ void App::logFileClose() {
 
 namespace {
 
-// ---- 主题色(对齐官网 index/static/css/style.css 的设计令牌:OLED 近黑 + 信号绿)----
-#define C_BG    RGB(0x06, 0x09, 0x08)   // --ink
-#define C_CARD  RGB(0x0D, 0x14, 0x11)   // --panel-solid
-#define C_CARD2 RGB(0x14, 0x1E, 0x18)   // 面板提亮一档
-#define C_BORD  RGB(0x1E, 0x26, 0x22)   // --line(绿调细线)
-#define C_ACC   RGB(0x00, 0xFF, 0x88)   // --signal 品牌信号绿
-#define C_ACCD  RGB(0x0A, 0x2E, 0x1D)   // signal 暗底
-#define C_TEXT  RGB(0xEE, 0xF5, 0xF0)   // --paper
-#define C_DIM   RGB(0x9D, 0xB0, 0xA6)   // --mist
-#define C_GREEN RGB(0x00, 0xFF, 0x88)   // 健康状态 = signal
-#define C_RED   RGB(0xFF, 0x54, 0x70)   // --velocity 速度红
-#define C_YEL   RGB(0xF2, 0xBD, 0x5E)   // --solder 焊锡琥珀
-#define C_LOGBG RGB(0x04, 0x06, 0x05)
-#define C_ONACC RGB(0x04, 0x16, 0x0D)   // 信号绿底上的深色文字
-#define C_GRID  RGB(0x08, 0x12, 0x0C)   // 背景电路网格线(signal 4% over ink)
+// 设备与光标设置共用玻璃材质及颜色，普通/二次元模式仍保留。
+#define C_BG qpointer::glass::Palette().background
+#define C_CARD qpointer::glass::Palette().panel
+#define C_CARD2 qpointer::glass::Palette().field
+#define C_BORD qpointer::glass::Palette().border
+#define C_ACC qpointer::glass::Palette().accent
+#define C_ACCD qpointer::glass::Palette().selected
+#define C_TEXT qpointer::glass::Palette().text
+#define C_DIM qpointer::glass::Palette().secondary
+#define C_GREEN C_ACC
+#define C_RED RGB(246, 126, 137)
+#define C_YEL qpointer::glass::Gold()
+#define C_LOGBG qpointer::glass::Palette().sidebar
+#define C_ONACC qpointer::glass::Palette().accent
 
-constexpr int BASE_W = 460, BASE_H = 646;
-constexpr wchar_t APP_VER[] = L"v0.1.13";
+constexpr int BASE_W = 1088, BASE_H = 880;
+constexpr wchar_t APP_VER[] = L"v0.1.13 · 合并版";
+constexpr int ID_DEVICE_PAGE = 9001, ID_POINTER_PAGE = 9002;
+HWND s_deviceButton{}, s_pointerButton{};
+bool s_pointerPage = false;
+struct NavigationMotion { bool hovered=false, pressed=false; float hover=0, press=0; };
+NavigationMotion s_navigation[2];
+constexpr UINT_PTR NAV_ANIMATION = 0x5149;
+ULONG_PTR s_graphicsToken{};
 
 float SC = 1.0f;
 int S(int v) { return (int)(v * SC + 0.5f); }
@@ -140,6 +151,7 @@ enum Hit {
     HIT_NET,        // kmboxNET 模拟开关
     HIT_LOGSAVE,    // 日志落盘开关(用户侧排障)
     HIT_TASKBAR,    // Windows 11 任务栏控制岛
+    HIT_POINTER,    // 顶部内置光标入口
 };
 const int TIER_VALS[8]   = {125, 250, 500, 1000, 2000, 4000, 8000, 0};
 const wchar_t* TIER_LBL[8] = {L"125", L"250", L"500", L"1K", L"2K", L"4K", L"8K", L"直通"};
@@ -152,7 +164,7 @@ UINT s_pointerReleaseMessage = 0;
 
 // ---- 动画引擎:按需 60fps 定时器,全部停稳自动熄火(空闲零重绘零 CPU) ----
 constexpr UINT_PTR TIMER_ANIM = 2;
-constexpr int HIT_MAX = HIT_TASKBAR + 1;
+constexpr int HIT_MAX = HIT_POINTER + 1;
 bool  s_animOn = false;
 bool  s_tracking = false;        // TrackMouseEvent 已挂
 int   s_hoverHit = HIT_NONE;
@@ -202,56 +214,128 @@ RECT fx(RECT r, int hit) {
     return r;
 }
 
-// ---- 布局(基准 460×646) ----
-RECT rTitle()   { return SR(0, 0, BASE_W, 44); }
-RECT rClose()   { return SR(BASE_W - 40, 6, 32, 32); }
-RECT rMin()     { return SR(BASE_W - 76, 6, 32, 32); }
-RECT rPin()     { return SR(BASE_W - 112, 6, 32, 32); }
-RECT rDot()     { return SR(BASE_W - 136, 17, 10, 10); }
-RECT rCard1()   { return SR(12, 54, 436, 100); }
-RECT rCombo()   { return SR(24, 84, 288, 30); }
-RECT rRefresh() { return SR(320, 84, 34, 30); }
-RECT rConnect() { return SR(362, 84, 74, 30); }
-RECT rStatus()  { return SR(24, 122, 412, 18); }
-RECT rCard2()   { return SR(12, 162, 436, 88); }
-RECT rFwd()     { return SR(24, 180, 150, 46); }
-RECT rSeg(int i){ return SR(250, 178, 186, 28); }   // 两格
-RECT rShare()   { return SR(250, 178, 93, 28); }
-RECT rExcl()    { return SR(343, 178, 93, 28); }
-RECT rHotkey()  { return SR(250, 208, 186, 22); }
-RECT rStopOnRelease() { return SR(250, 230, 186, 18); }
-RECT rCard3()   { return SR(12, 258, 436, 112); }
+// ---- 单窗口布局；顶部切换页，设备页左侧控制、右侧诊断 ----
+RECT rTitle()   { return SR(0, 0, BASE_W, 76); }
+RECT rClose()   { return SR(BASE_W - 66, 28, 30, 30); }
+RECT rMin()     { return SR(BASE_W - 104, 28, 30, 30); }
+RECT rPin()     { return SR(BASE_W - 142, 28, 30, 30); }
+RECT rDot()     { return SR(BASE_W - 174, 39, 8, 8); }
+RECT rDevicePage() { return SR(360, 25, 144, 36); }
+RECT rPointerPage() { return SR(516, 25, 144, 36); }
+RECT rPointerContent() { return SR(12, 124, 1064, 744); }
+RECT rCard1()   { return SR(24, 132, 560, 144); }
+RECT rCombo()   { return SR(44, 184, 360, 38); }
+RECT rRefresh() { return SR(414, 184, 38, 38); }
+RECT rConnect() { return SR(462, 184, 102, 38); }
+RECT rStatus()  { return SR(44, 236, 520, 22); }
+RECT rCard2()   { return SR(24, 296, 560, 154); }
+RECT rFwd()     { return SR(44, 346, 240, 64); }
+RECT rSeg(int) { return SR(316, 324, 248, 38); }
+RECT rShare()   { return SR(316, 324, 124, 38); }
+RECT rExcl()    { return SR(440, 324, 124, 38); }
+RECT rHotkey()  { return SR(316, 372, 248, 22); }
+RECT rStopOnRelease() { return SR(316, 404, 248, 24); }
+RECT rCard3()   { return SR(24, 470, 560, 166); }
 RECT rTier(int i) {
-    int x0 = 24, w = 412;
-    int a = x0 + i * w / 8, b = x0 + (i + 1) * w / 8;
-    return SR(a, 288, b - a, 28);
+    int a=44+i*520/8, b=44+(i+1)*520/8;
+    return SR(a, 522, b-a, 38);
 }
-RECT rRateIn()  { return SR(24, 326, 412, 16); }
-RECT rRateOut() { return SR(24, 346, 412, 16); }
-RECT rCard4()   { return SR(12, 378, 436, 124); }
-RECT rTile(int i) {
-    int col = i % 3, row = i / 3;
-    return SR(24 + col * 143, 386 + row * 58, 136, 52);
+RECT rRateIn()  { return SR(44, 578, 520, 18); }
+RECT rRateOut() { return SR(44, 606, 520, 18); }
+RECT rCard4()   { return SR(608, 132, 456, 318); }
+RECT rTile(int i) { return SR(628+(i%2)*218, 178+(i/2)*86, 198, 70); }
+RECT rCard5()   { return SR(24, 656, 560, 94); }
+RECT rNetTog()  { return SR(216, 680, 44, 24); }
+RECT rLog()     { return SR(608, 470, 456, 280); }
+RECT rAuto()    { return SR(44, 796, 154, 30); }
+RECT rLink3m()  { return SR(256, 796, 132, 30); }
+RECT rLogSave() { return SR(416, 796, 132, 30); }
+RECT rTaskbar() { return SR(576, 796, 154, 30); }
+
+void layoutNavigation() {
+    auto place=[](HWND window, RECT r) { if(window) SetWindowPos(window,nullptr,r.left,r.top,
+        r.right-r.left,r.bottom-r.top,SWP_NOZORDER|SWP_NOACTIVATE); };
+    place(s_deviceButton,rDevicePage()); place(s_pointerButton,rPointerPage());
 }
-RECT rCard5()   { return SR(12, 510, 436, 48); }
-RECT rNetTog()  { return SR(158, 524, 38, 20); }
-RECT rLog()     { return SR(12, 566, 436, 50); }
-RECT rGear()    { return SR(16, 622, 20, 20); }
-RECT rAuto()    { return SR(42, 622, 82, 20); }
-RECT rLink3m()  { return SR(128, 622, 68, 20); }
-RECT rLogSave() { return SR(200, 622, 78, 20); }
-RECT rTaskbar() { return SR(282, 622, 82, 20); }
+
+LRESULT CALLBACK NavigationProc(HWND window, UINT message, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR index) {
+    auto& motion=s_navigation[index];
+    if (message==WM_NCDESTROY) {
+        KillTimer(window,NAV_ANIMATION);
+        RemoveWindowSubclass(window,NavigationProc,id);
+        return DefSubclassProc(window,message,wp,lp);
+    }
+    if (message==WM_ERASEBKGND) return 1;
+    if (message==WM_PAINT || message==WM_PRINTCLIENT || message==WM_PRINT) {
+        if(message==WM_PRINT && (!(lp & PRF_CLIENT) || ((lp & PRF_CHECKVISIBLE) && !IsWindowVisible(window)))) return 0;
+        PAINTSTRUCT ps{};
+        HDC target=message==WM_PAINT?BeginPaint(window,&ps):reinterpret_cast<HDC>(wp);
+        RECT r{}; GetClientRect(window,&r);
+        HDC buffer=CreateCompatibleDC(target);
+        HBITMAP bitmap=CreateCompatibleBitmap(target,r.right,r.bottom);
+        if(buffer && bitmap) {
+            auto old=SelectObject(buffer,bitmap);
+            DRAWITEMSTRUCT item{}; item.CtlType=ODT_BUTTON; item.CtlID=GetDlgCtrlID(window);
+            item.itemAction=ODA_DRAWENTIRE; item.hwndItem=window; item.hDC=buffer; item.rcItem=r;
+            if(GetFocus()==window) item.itemState|=ODS_FOCUS;
+            if(SendMessageW(window,WM_QUERYUISTATE,0,0)&UISF_HIDEFOCUS) item.itemState|=ODS_NOFOCUSRECT;
+            SendMessageW(GetParent(window),WM_DRAWITEM,item.CtlID,reinterpret_cast<LPARAM>(&item));
+            BitBlt(target,0,0,r.right,r.bottom,buffer,0,0,SRCCOPY);
+            SelectObject(buffer,old);
+        }
+        if(bitmap) DeleteObject(bitmap);
+        if(buffer) DeleteDC(buffer);
+        if(message==WM_PAINT) EndPaint(window,&ps);
+        return 0;
+    }
+    if ((message==WM_MOUSEMOVE && !motion.hovered) || message==WM_MOUSELEAVE || message==BM_SETSTATE) {
+        if(message==BM_SETSTATE) motion.pressed=wp!=0;
+        else {
+            motion.hovered=message==WM_MOUSEMOVE;
+            if(motion.hovered) { TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE,window,0}; TrackMouseEvent(&track); }
+        }
+        if(!SetTimer(window,NAV_ANIMATION,16,nullptr)) {
+            motion.hover=motion.hovered?1.f:0.f; motion.press=motion.pressed?1.f:0.f;
+        }
+        InvalidateRect(window,nullptr,FALSE);
+    }
+    if(message==WM_TIMER && wp==NAV_ANIMATION) {
+        BOOL enabled=FALSE;
+        const bool animate=IsWindowVisible(window) && GetForegroundWindow()==g.hwnd &&
+            !GetSystemMetrics(SM_REMOTESESSION) && SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION,0,&enabled,0) && enabled;
+        const float speed=animate?.35f:1.f;
+        bool moving=stepTo(motion.hover,motion.hovered?1.f:0.f,speed);
+        moving|=stepTo(motion.press,motion.pressed?1.f:0.f,speed);
+        if(!moving) KillTimer(window,NAV_ANIMATION);
+        InvalidateRect(window,nullptr,FALSE);
+        return 0;
+    }
+    const LRESULT result=DefSubclassProc(window,message,wp,lp);
+    if(message==WM_SETFOCUS || message==WM_KILLFOCUS || message==WM_UPDATEUISTATE)
+        InvalidateRect(window,nullptr,FALSE);
+    return result;
+}
+
+void createNavigation(HINSTANCE instance) {
+    s_deviceButton=CreateWindowExW(0,L"BUTTON",L"设备连接",WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_OWNERDRAW,
+        0,0,0,0,g.hwnd,reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_DEVICE_PAGE)),instance,nullptr);
+    s_pointerButton=CreateWindowExW(0,L"BUTTON",L"光标设置",WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_OWNERDRAW,
+        0,0,0,0,g.hwnd,reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_POINTER_PAGE)),instance,nullptr);
+    SetWindowTheme(s_deviceButton,L"",L""); SetWindowTheme(s_pointerButton,L"",L"");
+    SetWindowSubclass(s_deviceButton,NavigationProc,1,0);
+    SetWindowSubclass(s_pointerButton,NavigationProc,1,1);
+    layoutNavigation();
+}
 
 // ---- 绘制辅助 ----
 void rrect(HDC dc, RECT r, COLORREF fill, COLORREF border, int rad) {
-    HBRUSH b = CreateSolidBrush(fill);
-    HPEN p = CreatePen(PS_SOLID, 1, border);
-    HGDIOBJ ob = SelectObject(dc, b), op = SelectObject(dc, p);
-    RoundRect(dc, r.left, r.top, r.right, r.bottom, S(rad), S(rad));
-    SelectObject(dc, ob); SelectObject(dc, op);
-    DeleteObject(b); DeleteObject(p);
+    qpointer::glass::Surface(dc,r,float(S(std::max(4,rad))),fill,border);
+}
+void navigationBackground(HDC dc, RECT client) {
+    qpointer::glass::Background(dc,client);
 }
 void txt(HDC dc, RECT r, HFONT f, COLORREF c, UINT fmt, const std::wstring& s) {
+    SetBkMode(dc, TRANSPARENT);
     HGDIOBJ of = SelectObject(dc, f);
     SetTextColor(dc, c);
     DrawTextW(dc, s.c_str(), -1, &r, fmt | DT_NOPREFIX | DT_SINGLELINE);
@@ -285,30 +369,21 @@ bool heartbeatOk() {
 
 // ---- 主绘制 ----
 void paint(HDC dc, RECT rc) {
-    // 背景:OLED 近黑 + 56px 电路网格(与官网 body 背景同款)
-    HBRUSH bg = CreateSolidBrush(C_BG);
-    FillRect(dc, &rc, bg);
-    DeleteObject(bg);
-    {
-        HPEN gp = CreatePen(PS_SOLID, 1, C_GRID);
-        HGDIOBJ op = SelectObject(dc, gp);
-        int step = S(56);
-        for (int gx = step; gx < rc.right; gx += step) {
-            MoveToEx(dc, gx, 0, nullptr); LineTo(dc, gx, rc.bottom);
-        }
-        for (int gy = step; gy < rc.bottom; gy += step) {
-            MoveToEx(dc, 0, gy, nullptr); LineTo(dc, rc.right, gy);
-        }
-        SelectObject(dc, op);
-        DeleteObject(gp);
-    }
+    navigationBackground(dc,rc);
+    RECT frame=rc; InflateRect(&frame,-1,-1);
+    HPEN border=CreatePen(PS_SOLID,1,C_BORD); auto oldPen=SelectObject(dc,border);
+    auto oldBrush=SelectObject(dc,GetStockObject(NULL_BRUSH));
+    RoundRect(dc,frame.left,frame.top,frame.right,frame.bottom,S(26),S(26));
+    SelectObject(dc,oldBrush); SelectObject(dc,oldPen); DeleteObject(border);
     SetBkMode(dc, TRANSPARENT);
 
     int st = g.state.load();
 
     // === 标题栏 ===
-    dot(dc, SR(16, 15, 14, 14), C_ACC);
-    txt(dc, SR(40, 0, 260, 44), fTitle, C_TEXT, DT_LEFT | DT_VCENTER, L"QInEX-Link · 上位机直驱");
+    rrect(dc,SR(42,31,24,24),C_ACCD,mix(C_BORD,C_ACC,.5f),5);
+    txt(dc,SR(42,31,24,24),fIcon,C_ACC,DT_CENTER|DT_VCENTER,L"\uE707");
+    txt(dc, SR(78, 25, 104, 36), fTitle, C_TEXT, DT_LEFT | DT_VCENTER, L"QInEX");
+    txt(dc, SR(181, 25, 156, 36), fMono, C_DIM, DT_LEFT | DT_VCENTER, L"TOUCH LINK / PC");
     COLORREF dc1 = (st == LS_CONNECTED && g.boardMode == 'C') ? C_GREEN
                  : (st == LS_IDLE ? C_DIM : C_YEL);
     if (dc1 == C_YEL) dc1 = mix(C_YEL, RGB(0x6B, 0x54, 0x20), 0.55f * pulse01(1200));  // 连接中呼吸
@@ -322,9 +397,18 @@ void paint(HDC dc, RECT rc) {
     sysBtn(rMin(),   HIT_MIN,   C_CARD2, L"\uE921", C_DIM);
     sysBtn(rClose(), HIT_CLOSE, RGB(0xA8, 0x2E, 0x44), L"\uE8BB", C_DIM);
 
+    const COLORREF sectionColor=s_pointerPage?C_ACC:C_YEL;
+    rrect(dc,SR(24,92,106,22),mix(C_BG,sectionColor,.06f),mix(C_BORD,sectionColor,.38f),4);
+    txt(dc,SR(24,92,106,22),fMono,sectionColor,DT_CENTER|DT_VCENTER,
+        s_pointerPage?L"PC POINTER":L"P4 / MODE C");
+    txt(dc, SR(144, 85, 576, 36), fSmall, C_DIM, DT_LEFT | DT_VCENTER,
+        s_pointerPage ? L"设备接入、画面输出与触点校准" : L"连接设备，开始键鼠直驱");
+    txt(dc,SR(784,85,280,36),fMono,C_DIM,DT_RIGHT|DT_VCENTER,L"QInEX-LINK / CONTROL");
+    if (s_pointerPage) return;
+
     // === 卡1 连接 ===
     rrect(dc, rCard1(), C_CARD, C_BORD, 10);
-    txt(dc, SR(24, 60, 100, 18), fSmall, C_DIM, DT_LEFT | DT_VCENTER, L"连接");
+    txt(dc, SR(44, 148, 300, 24), fText, C_TEXT, DT_LEFT | DT_VCENTER, L"连接设备");
     {
         float t = s_hov[HIT_COMBO];
         rrect(dc, fx(rCombo(), HIT_COMBO), mix(C_CARD2, RGB(0x1C, 0x2B, 0x22), t),
@@ -382,6 +466,7 @@ void paint(HDC dc, RECT rc) {
 
     // === 卡2 主开关 ===
     rrect(dc, rCard2(), C_CARD, C_BORD, 10);
+    txt(dc,SR(44,312,240,24),fText,C_TEXT,DT_LEFT|DT_VCENTER,L"键鼠转发");
     bool ready = link::txReady();
     bool fwd = g.forwarding;
     {
@@ -421,7 +506,7 @@ void paint(HDC dc, RECT rc) {
 
     // === 卡3 回报率 ===
     rrect(dc, rCard3(), C_CARD, C_BORD, 10);
-    txt(dc, SR(24, 264, 100, 18), fSmall, C_DIM, DT_LEFT | DT_VCENTER, L"回报率");
+    txt(dc, SR(44, 488, 300, 24), fText, C_TEXT, DT_LEFT | DT_VCENTER, L"回报率");
     {
         int selIdx = 0;
         for (int i = 0; i < 8; i++) if (g.tier == TIER_VALS[i]) selIdx = i;
@@ -459,12 +544,13 @@ void paint(HDC dc, RECT rc) {
 
     // === 卡4 仪表 ===
     rrect(dc, rCard4(), C_CARD, C_BORD, 10);
+    txt(dc,SR(628,148,416,24),fSmall,C_DIM,DT_LEFT|DT_VCENTER,L"链路状态");
     auto tile = [&](int i, const wchar_t* name, const std::wstring& val, COLORREF vc) {
         RECT r = rTile(i);
         rrect(dc, r, C_CARD2, C_BORD, 8);
-        RECT rn = r; rn.bottom = rn.top + S(22); rn.top += S(4);
+        RECT rn = r; rn.bottom = rn.top + S(30); rn.top += S(9);
         txt(dc, rn, fSmall, C_DIM, DT_CENTER | DT_VCENTER, name);
-        RECT rv = r; rv.top += S(22);
+        RECT rv = r; rv.top += S(30); rv.bottom -= S(6);
         txt(dc, rv, fStat, vc, DT_CENTER | DT_VCENTER, val);
     };
     {
@@ -506,26 +592,26 @@ void paint(HDC dc, RECT rc) {
     rrect(dc, rCard5(), C_CARD, C_BORD, 10);
     bool netOn = g.netEnable;
     bool netUp = g.netUp.load();
-    txt(dc, SR(24, 510, 130, 48), fText, netOn ? C_TEXT : C_DIM, DT_LEFT | DT_VCENTER, L"kmboxNET 模拟");
+    txt(dc, SR(44, 674, 160, 32), fText, netOn ? C_TEXT : C_DIM, DT_LEFT | DT_VCENTER, L"kmboxNET 模拟");
     // 开关滑块(点击切换,旋钮平滑滑动)
     {
         float t = s_hov[HIT_NET];
         RECT tog = rNetTog();
         rrect(dc, tog, mix(netOn ? C_ACCD : C_CARD2, RGB(0x17, 0x33, 0x24), t * 0.6f),
               mix(netOn ? C_ACC : C_BORD, C_ACC, t), 10);
-        RECT knob = lerpRect(SR(161, 527, 14, 14), SR(178, 527, 14, 14), s_knobPos);
+        RECT knob = lerpRect(SR(220, 684, 16, 16), SR(240, 684, 16, 16), s_knobPos);
         dot(dc, knob, mix(C_DIM, C_ACC, s_knobPos));
     }
     {
         wchar_t nb[96];
         if (netOn && netUp) {
             swprintf(nb, 96, L"UDP %d · MAC %08X · 收 %u", g.netPort, g.netMac, g.netRx.load());
-            txt(dc, SR(210, 510, 228, 48), fSmall, C_GREEN, DT_LEFT | DT_VCENTER, nb);
+            txt(dc, SR(44, 714, 520, 24), fSmall, C_GREEN, DT_LEFT | DT_VCENTER, nb);
         } else if (netOn) {
-            txt(dc, SR(210, 510, 228, 48), fSmall, C_RED, DT_LEFT | DT_VCENTER, L"启动失败(端口被占?)");
+            txt(dc, SR(44, 714, 520, 24), fSmall, C_RED, DT_LEFT | DT_VCENTER, L"启动失败(端口被占?)");
         } else {
             swprintf(nb, 96, L"UDP %d · 关闭(第三方软件入口)", g.netPort);
-            txt(dc, SR(210, 510, 228, 48), fSmall, C_DIM, DT_LEFT | DT_VCENTER, nb);
+            txt(dc, SR(44, 714, 520, 24), fSmall, C_DIM, DT_LEFT | DT_VCENTER, nb);
         }
     }
 
@@ -533,19 +619,21 @@ void paint(HDC dc, RECT rc) {
     // 与 APP /api/appauth 同定位:防"没 P4 的人白嫖工具",不防伪造串口心跳(离线无密码学可依)。
     if (s_gate > 0.01f) {
         RECT ov{rCard2().left, rCard2().top, rCard5().right, rCard5().bottom};
-        {   // 半透明黑纱:1×1 位图 AlphaBlend 拉伸,常量透明度随 s_gate 淡出
+        {   // 同色雾面遮罩保留功能区轮廓；验证逻辑和命中锁定保持不变。
             HDC mdc = CreateCompatibleDC(dc);
             HBITMAP mb = CreateCompatibleBitmap(dc, 1, 1);
             HGDIOBJ omb = SelectObject(mdc, mb);
-            SetPixel(mdc, 0, 0, RGB(0x03, 0x05, 0x04));
-            BLENDFUNCTION bf{AC_SRC_OVER, 0, (BYTE)(215 * s_gate), 0};
+            SetPixel(mdc, 0, 0, C_BG);
+            BLENDFUNCTION bf{AC_SRC_OVER, 0, (BYTE)(145 * s_gate), 0};
             AlphaBlend(dc, ov.left, ov.top, ov.right - ov.left, ov.bottom - ov.top,
                        mdc, 0, 0, 1, 1, bf);
             SelectObject(mdc, omb); DeleteObject(mb); DeleteDC(mdc);
         }
         // 文案随纱一起淡出(颜色向纱底色回混)
-        auto fade = [&](COLORREF c) { return mix(RGB(0x03, 0x05, 0x04), c, s_gate); };
+        auto fade = [&](COLORREF c) { return mix(C_BG, c, s_gate); };
         int cy = (ov.top + ov.bottom) / 2;
+        // 验证提示覆盖已有文字，保留实色提示底板以保证可读性。
+        qpointer::glass::Surface(dc,{ov.left+S(62),cy-S(76),ov.right-S(62),cy+S(58)},float(S(12)),C_CARD,C_BORD,255);
         bool bad = (st == LS_CONNECTED && g.boardAct.load() == 0);
         COLORREF lc = bad ? C_RED : mix(C_YEL, RGB(0x8A, 0x6E, 0x28), 0.4f * pulse01(1600));
         txt(dc, {ov.left, cy - S(56), ov.right, cy - S(16)}, fLock, fade(lc),
@@ -563,22 +651,24 @@ void paint(HDC dc, RECT rc) {
             DT_CENTER | DT_VCENTER, hint);
     }
 
-    // === 日志条(3 行可见,滚轮翻看历史)===
-    rrect(dc, rLog(), C_LOGBG, C_BORD, 8);
+    // === 日志面板 ===
+    rrect(dc, rLog(), C_LOGBG, C_BORD, 18);
+    txt(dc,SR(628,488,416,24),fSmall,C_DIM,DT_LEFT|DT_VCENTER,L"运行日志");
     {
         std::lock_guard<std::mutex> lk(g.logMx);
         int n = (int)g.logLines.size();
-        int maxScroll = n > 3 ? n - 3 : 0;
+        constexpr int visibleLines=13;
+        int maxScroll = n > visibleLines ? n - visibleLines : 0;
         if (s_logScroll > maxScroll) s_logScroll = maxScroll;
         if (s_logScroll < 0) s_logScroll = 0;
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < visibleLines; i++) {
             int idx = n - 1 - s_logScroll - i;   // 顶行最旧、底行最新
             if (idx < 0 || idx >= n) continue;
             RECT r = rLog();
-            r.left += S(10); r.right -= S(20);
-            r.top += S(3 + (2 - i) * 15);
+            r.left += S(20); r.right -= S(24);
+            r.top += S(54 + (visibleLines - 1 - i) * 16);
             r.bottom = r.top + S(15);
-            txt(dc, r, fMono, RGB(0x54, 0xD8, 0x94), DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS,
+            txt(dc, r, fMono, C_ACC, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS,
                 g.logLines[idx]);
         }
         // 右侧滚动指示:上滚了显示 ▲,还有更新的显示 ▼
@@ -592,7 +682,7 @@ void paint(HDC dc, RECT rc) {
     }
 
     // === 底栏 ===
-    txt(dc, rGear(), fIcon, C_DIM, DT_CENTER | DT_VCENTER, L"\uE713");
+    rrect(dc,SR(24,774,1040,70),C_CARD,C_BORD,20);
     txt(dc, rAuto(), fSmall,
         mix(g.autostart ? C_GREEN : C_DIM, C_TEXT, s_hov[HIT_AUTOSTART] * 0.7f),
         DT_LEFT | DT_VCENTER, g.autostart ? L"开机自启 \uE73E" : L"开机自启");
@@ -605,7 +695,7 @@ void paint(HDC dc, RECT rc) {
     txt(dc, rTaskbar(), fSmall,
         mix(g.taskbarWidget ? C_ACC : C_DIM, C_TEXT, s_hov[HIT_TASKBAR] * 0.7f),
         DT_LEFT | DT_VCENTER, g.taskbarWidget ? L"任务栏 \uE73E" : L"任务栏");
-    txt(dc, SR(BASE_W - 76, 622, 64, 20), fSmall, C_DIM, DT_RIGHT | DT_VCENTER, APP_VER);
+    txt(dc, SR(BASE_W - 244, 796, 196, 30), fSmall, C_DIM, DT_RIGHT | DT_VCENTER, APP_VER);
 
     // 窗口外框:1px 绿调细线(官网 --line-strong 面板描边)
     {
@@ -649,6 +739,7 @@ int hitTest(POINT p) {
     if (in(rClose()))   return HIT_CLOSE;
     if (in(rMin()))     return HIT_MIN;
     if (in(rPin()))     return HIT_PIN;
+    if (s_pointerPage) return HIT_NONE;
     if (in(rCombo()))   return HIT_COMBO;
     if (in(rRefresh())) return HIT_REFRESH;
     if (in(rConnect())) return HIT_CONNECT;
@@ -703,6 +794,28 @@ void pickPort() {
         settings::save();
         InvalidateRect(g.hwnd, nullptr, FALSE);
     }
+}
+
+bool ensurePointer() {
+    const RECT bounds=rPointerContent();
+    if (qpointer::desktop::Initialize(GetModuleHandleW(nullptr), g.hwnd, SW_HIDE, &bounds)) return true;
+    g.log(L"PC 光标初始化失败，请点击光标设置重试");
+    MessageBoxW(g.hwnd, L"PC 光标初始化失败，请重试或查看日志。", L"QInEX-Link", MB_OK | MB_ICONERROR);
+    return false;
+}
+
+void selectPage(bool pointer) {
+    s_pointerPage=pointer;
+    if (!pointer) qpointer::desktop::HideSettings();
+    InvalidateRect(g.hwnd,nullptr,FALSE);
+    InvalidateRect(s_deviceButton,nullptr,FALSE); InvalidateRect(s_pointerButton,nullptr,FALSE);
+}
+
+void requestExit() {
+    // Modal editors hold application state on their stack; finish them before unified teardown.
+    if (!IsWindowEnabled(g.hwnd)) return;
+    // 先处理光标草稿，取消退出时转发和接收继续运行。
+    if (qpointer::desktop::CanExit()) DestroyWindow(g.hwnd);
 }
 
 void onClick(int hit) {
@@ -777,6 +890,9 @@ void onClick(int hit) {
             g.logFileClose();
         }
         break;
+    case HIT_POINTER:
+        if (ensurePointer()) qpointer::desktop::ShowSettings();
+        break;
     case HIT_TASKBAR:
         g.taskbarWidget = !g.taskbarWidget;
         settings::save();
@@ -809,6 +925,7 @@ void trayMenu() {
     AppendMenuW(m, MF_STRING | (g.forwarding ? MF_CHECKED : 0), 2, L"转发");
     AppendMenuW(m, MF_STRING | (g.taskbarWidget ? MF_CHECKED : 0), 4, L"任务栏控制岛");
     AppendMenuW(m, MF_STRING, 5, L"后台性能说明");
+    AppendMenuW(m, MF_STRING, 6, L"PC 光标与画面…");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, 3, L"退出");
     POINT p; GetCursorPos(&p);
@@ -819,7 +936,16 @@ void trayMenu() {
     if (id == 2) setForwarding(!g.forwarding);
     if (id == 4) onClick(HIT_TASKBAR);
     if (id == 5) openPerformanceGuide();
-    if (id == 3) DestroyWindow(g.hwnd);
+    if (id == 6 && ensurePointer()) qpointer::desktop::ShowMenu(p);
+    if (id == 3) requestExit();
+}
+
+void makeFonts();
+void freeFonts() {
+    for (HFONT* font : {&fTitle,&fText,&fSmall,&fBig,&fStat,&fMono,&fIcon,&fLock}) {
+        if (*font) DeleteObject(*font);
+        *font=nullptr;
+    }
 }
 
 LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
@@ -834,6 +960,57 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         return 1;
     }
     switch (msg) {
+    case WM_DPICHANGED: {
+        const RECT suggested=*reinterpret_cast<RECT*>(lp);
+        MONITORINFO monitor{sizeof(monitor)};
+        if (!GetMonitorInfoW(MonitorFromRect(&suggested,MONITOR_DEFAULTTONEAREST),&monitor)) break;
+        const RECT work=monitor.rcWork;
+        SC=std::min(HIWORD(wp)/96.f,std::min((work.right-work.left-40)/float(BASE_W),
+            (work.bottom-work.top-40)/float(BASE_H)));
+        freeFonts(); makeFonts();
+        const int x=std::clamp(suggested.left,work.left,std::max(work.left,work.right-S(BASE_W)));
+        const int y=std::clamp(suggested.top,work.top,std::max(work.top,work.bottom-S(BASE_H)));
+        SetWindowPos(h,nullptr,x,y,S(BASE_W),S(BASE_H),SWP_NOZORDER|SWP_NOACTIVATE);
+        layoutNavigation();
+        qpointer::desktop::Resize(rPointerContent());
+        RedrawWindow(h,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN);
+        return 0;
+    }
+    case WM_COMMAND:
+        if (LOWORD(wp)==ID_DEVICE_PAGE) { selectPage(false); return 0; }
+        if (LOWORD(wp)==ID_POINTER_PAGE) { onClick(HIT_POINTER); return 0; }
+        break;
+    case WM_DRAWITEM: {
+        auto* item=reinterpret_cast<DRAWITEMSTRUCT*>(lp);
+        if(item->CtlID!=ID_DEVICE_PAGE && item->CtlID!=ID_POINTER_PAGE) break;
+        const bool selected=(item->CtlID==ID_POINTER_PAGE)==s_pointerPage;
+        // Native owner-drawn buttons need the same background at their rounded corners.
+        POINT origin{}; MapWindowPoints(item->hwndItem,h,&origin,1);
+        RECT background{}; GetClientRect(h,&background);
+        const int saved=SaveDC(item->hDC);
+        SetViewportOrgEx(item->hDC,-origin.x,-origin.y,nullptr);
+        navigationBackground(item->hDC,background);
+        RestoreDC(item->hDC,saved);
+        const bool focused=(item->itemState & ODS_FOCUS) && !(item->itemState & ODS_NOFOCUSRECT);
+        const auto& motion=s_navigation[item->CtlID==ID_POINTER_PAGE?1:0];
+        RECT surface=item->rcItem; const int inset=int(S(2)*motion.press+.5f);
+        InflateRect(&surface,-inset,-inset);
+        if (selected || focused || motion.hover>.01f || motion.press>.01f)
+            rrect(item->hDC,surface,C_ACCD,focused?C_ACC:mix(C_BORD,C_ACC,
+                std::min(1.f,(selected?.35f:0.f)+motion.hover*.4f+motion.press*.25f)),8);
+        txt(item->hDC,surface,fText,selected?C_ACC:mix(C_DIM,C_ACC,motion.hover),DT_CENTER|DT_VCENTER,
+            item->CtlID==ID_DEVICE_PAGE?L"设备连接":L"光标设置");
+        return TRUE;
+    }
+    case qpointer::desktop::kShowPointerMessage:
+        selectPage(true); return 0;
+    case qpointer::desktop::kShowDeviceMessage:
+        selectPage(false); return 0;
+    case qpointer::desktop::kThemeChangedMessage:
+        InvalidateRect(h,nullptr,FALSE);
+        InvalidateRect(s_deviceButton,nullptr,FALSE); InvalidateRect(s_pointerButton,nullptr,FALSE);
+        return 0;
+    case WM_ERASEBKGND: return 1;
     case WM_PAINT: {
         PAINTSTRUCT ps;
         HDC dc = BeginPaint(h, &ps);
@@ -1051,12 +1228,16 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_CLOSE:
         ShowWindow(h, SW_HIDE);
         return 0;
+    case qpointer::desktop::kExitHostMessage:
+        requestExit();
+        return 0;
     case WM_DESTROY:
         settings::save();
         taskbar_widget::setEnabled(false);
         g.forwarding = false;
         g.grabbed = false;
         sender::releaseAll();
+        qpointer::desktop::Shutdown();
         g.logFileClose();
         Shell_NotifyIconW(NIM_DELETE, &s_nid);
         PostQuitMessage(0);
@@ -1071,11 +1252,11 @@ void makeFonts() {
                            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                            DEFAULT_PITCH, face);
     };
-    fTitle = mk(16, FW_BOLD,   L"Microsoft YaHei UI");
+    fTitle = mk(20, FW_BOLD,   L"Consolas");
     fText  = mk(14, FW_NORMAL, L"Microsoft YaHei UI");
     fSmall = mk(12, FW_NORMAL, L"Microsoft YaHei UI");
     fBig   = mk(17, FW_BOLD,   L"Microsoft YaHei UI");
-    fStat  = mk(15, FW_BOLD,   L"Microsoft YaHei UI");
+    fStat  = mk(18, FW_BOLD,   L"Consolas");
     fMono  = mk(11, FW_NORMAL, L"Consolas");
     fIcon  = mk(13, FW_NORMAL, L"Segoe MDL2 Assets");
     fLock  = mk(30, FW_NORMAL, L"Segoe MDL2 Assets");
@@ -1094,10 +1275,14 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
 
     performance::ProcessResult perf = performance::EnableProcessHighPerformance();
 
-    SetProcessDPIAware();
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    Gdiplus::GdiplusStartupInput graphicsInput;
+    if(Gdiplus::GdiplusStartup(&s_graphicsToken,&graphicsInput,nullptr)!=Gdiplus::Ok) return 1;
     {
         HDC dc = GetDC(nullptr);
         SC = GetDeviceCaps(dc, LOGPIXELSX) / 96.0f;
+        RECT work{}; SystemParametersInfoW(SPI_GETWORKAREA,0,&work,0);
+        SC=std::min(SC,std::min((work.right-work.left-40)/float(BASE_W),(work.bottom-work.top-40)/float(BASE_H)));
         ReleaseDC(nullptr, dc);
     }
     makeFonts();
@@ -1134,9 +1319,18 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
         x = (GetSystemMetrics(SM_CXSCREEN) - S(BASE_W)) / 2;
         y = (GetSystemMetrics(SM_CYSCREEN) - S(BASE_H)) / 2;
     }
+    POINT position{x,y}; MONITORINFO monitor{sizeof(monitor)};
+    if(GetMonitorInfoW(MonitorFromPoint(position,MONITOR_DEFAULTTONEAREST),&monitor)) {
+        x=std::clamp<LONG>(x,monitor.rcWork.left,std::max(monitor.rcWork.left,monitor.rcWork.right-S(BASE_W)));
+        y=std::clamp<LONG>(y,monitor.rcWork.top,std::max(monitor.rcWork.top,monitor.rcWork.bottom-S(BASE_H)));
+    }
     g.hwnd = CreateWindowExW(0, wc.lpszClassName, L"QInEX-Link",
-                             WS_POPUP | WS_MINIMIZEBOX,
+                             WS_POPUP | WS_MINIMIZEBOX | WS_CLIPCHILDREN,
                              x, y, S(BASE_W), S(BASE_H), nullptr, nullptr, inst, nullptr);
+    if (!g.hwnd) { Gdiplus::GdiplusShutdown(s_graphicsToken); return 1; }
+    createNavigation(inst);
+    const DWORD round=2; DwmSetWindowAttribute(g.hwnd,33,&round,sizeof(round));
+    const BOOL dark=TRUE; DwmSetWindowAttribute(g.hwnd,20,&dark,sizeof(dark));
     if (g.hwnd && s_pointerReleaseMessage) {
         // Link 常以管理员身份运行，而 Pointer 通常按普通权限启动。显式允许这条
         // 已注册消息跨 UIPI 边界，确保返回设置和截图校准都能解除独占输入。
@@ -1171,17 +1365,28 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     if (!AnimateWindow(g.hwnd, 200, AW_BLEND))   // 入场淡入;失败(远程桌面等)退回直显
         ShowWindow(g.hwnd, SW_SHOW);
     SetTimer(g.hwnd, 1, 1000, nullptr);
+    // 未使用光标时不枚举采集设备；保存了恢复选项后随统一程序启动。
+    if (qpointer::desktop::ResumeRequested()) ensurePointer();
 
     MSG m;
     while (GetMessageW(&m, nullptr, 0, 0) > 0) {
+        if ((m.hwnd==g.hwnd || IsChild(g.hwnd,m.hwnd)) && m.message==WM_KEYDOWN && m.wParam==VK_TAB && (GetKeyState(VK_CONTROL)&0x8000)) {
+            if(s_pointerPage) selectPage(false); else onClick(HIT_POINTER);
+            continue;
+        }
+        if (qpointer::desktop::ProcessMessage(m)) continue;
+        if((m.hwnd==g.hwnd || m.hwnd==s_deviceButton || m.hwnd==s_pointerButton) && IsDialogMessageW(g.hwnd,&m)) continue;
         TranslateMessage(&m);
         DispatchMessageW(&m);
     }
 
+    qpointer::desktop::Shutdown();
     taskbar_widget::stop();
     netserver::stop();
     sender::stop();
     link::shutdown();
     capture::stop();
+    freeFonts();
+    Gdiplus::GdiplusShutdown(s_graphicsToken);
     return 0;
 }

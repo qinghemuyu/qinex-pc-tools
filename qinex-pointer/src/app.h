@@ -187,6 +187,7 @@ struct Sample { qp::Point input, observed; qp::Geometry geometry; qp::Point scre
 class Application {
 public:
     HINSTANCE instance{};
+    HWND hostWindow{}; // 嵌入 Link 时统一托盘与退出，独立运行时为空。
     HWND main{}, overlay{}, region{}, snapshot{}, targetWindow{}, captureWindow{};
     HICON applicationIcon{}, applicationSmallIcon{};
     HFONT font{};
@@ -361,6 +362,9 @@ public:
     void LoadScene();
     void CheckAlignment();
     void RequestExit();
+    bool CanExit();
+    void ShowTrayMenu(POINT position);
+    void ReturnToHost();
     void AdoptSettings(const Settings& next);
     bool Start();
     void Stop();

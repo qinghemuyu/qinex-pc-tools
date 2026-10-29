@@ -62,6 +62,8 @@ void CenterDialog(HWND window, HWND owner) {
 }
 
 bool RunModalWindow(HWND owner, ModalWindowState& state) {
+    // Hosted settings are a child; disable the whole owner while the stack-backed dialog runs.
+    owner=GetAncestor(owner,GA_ROOT);
     EnableWindow(owner, FALSE);
     ShowWindow(state.window, SW_SHOW);
     SetForegroundWindow(state.window);

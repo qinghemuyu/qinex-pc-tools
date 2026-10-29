@@ -196,7 +196,7 @@ void Application::BeginCapture() {
     captureDue = now + static_cast<uint64_t>(seconds) * 1000; calibrationDeadline = captureDue + 45000; lastMove = now; stableAnchor = state.position;
     calibrationCaptureFrameBaseline = 0; calibrationCaptureStableSince = 0;
     notice = W(L"取样准备中。按提示保持真实触点稳定，截图完成后再释放转发。", L"取样准备中喵，停稳真实触点，截图完成后再释放转发。");
-    ShowCalibrationPrompt(); ShowWindow(main, SW_MINIMIZE);
+    ShowCalibrationPrompt(); ShowWindow(hostWindow ? hostWindow : main, SW_MINIMIZE);
     if (settings.mode == 2 && IsWindow(targetWindow)) SetForegroundWindow(targetWindow);
     else if (settings.mode == 3) {
         captureFullscreenRequested = true; captureCreateRetryAt = 0; captureHintUntil = 0;

@@ -1,4 +1,5 @@
 #include "app.h"
+#include "pointer_runtime.h"
 
 namespace {
 constexpr UINT kTrayMessage = WM_APP + 11;
@@ -44,7 +45,7 @@ std::optional<std::wstring> ChooseScenePath(HWND owner, bool save) {
 }
 
 void Application::UpdateTray(bool force) {
-    if (shuttingDown || !main) return;
+    if (hostWindow || shuttingDown || !main) return;
     const std::wstring tip = L"QInEX Pointer · " + (paused ? std::wstring(W(L"已暂停显示", L"暂停显示喵")) : deviceStatus);
     if (!force && trayInstalled && trayTooltip == tip) return;
     NOTIFYICONDATAW data{sizeof(data)}; data.hWnd = main; data.uID = 1;
@@ -70,6 +71,12 @@ void Application::UpdateTray(bool force) {
 }
 
 void Application::HideToTray() {
+    if (hostWindow) {
+        // 统一入口仍由 Link 的主窗口和托盘提供；保留草稿、接收及全屏输出。
+        ShowWindow(main, SW_HIDE);
+        SendMessageW(hostWindow, qp::desktop::kShowDeviceMessage, 0, 0);
+        return;
+    }
     UpdateTray(true);
     if (!trayInstalled) {
         Error(W(L"暂时无法显示托盘图标，请稍后重试。窗口已保留。",
@@ -166,15 +173,29 @@ void Application::LoadScene() {
     notice = W(L"场景已打开，请复核目标预览窗口和真实触点。", L"场景打开啦，请复核预览窗口和真实触点喵。"); statusAt = 0;
 }
 
-void Application::RequestExit() {
+bool Application::CanExit() {
     if (dirty || HasDraft()) {
         ShowControlWindow();
         const int answer = MessageBoxW(main,
             W(L"还有未保存的修改。是否保留窗口继续处理？\n选择“否”将退出，本次未保存修改不会写入配置。", L"还有修改没保存喵。是否留下继续处理？\n选择“否”会退出，本次修改不会保存喵。"),
             L"QInEX Pointer", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON1);
-        if (answer != IDNO) return;
+        if (answer != IDNO) return false;
     }
-    DestroyWindow(main);
+    return true;
+}
+
+void Application::RequestExit() {
+    if (hostWindow) { PostMessageW(hostWindow, qp::desktop::kExitHostMessage, 0, 0); return; }
+    if (CanExit()) DestroyWindow(main);
+}
+
+void Application::ReturnToHost() {
+    if (!hostWindow) { SelectPage(0); return; }
+    HideToTray();
+    if (IsWindow(captureWindow)) SetWindowPos(captureWindow, HWND_NOTOPMOST, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    ShowWindow(hostWindow, SW_RESTORE);
+    SetForegroundWindow(hostWindow);
 }
 
 LRESULT CALLBACK DemoProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
