@@ -48,6 +48,7 @@ LRESULT CALLBACK WirelessProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(window, message, wp, lp);
 }
 void ShowWireless(Application& controller) {
+    const HWND owner=controller.hostWindow ? controller.hostWindow : controller.main;
     WirelessDialog dialog; dialog.application = &controller;
     WNDCLASSW cls{}; cls.hInstance = controller.instance; cls.lpfnWndProc = WirelessProc; cls.lpszClassName = L"QPointerWireless"; cls.hCursor = LoadCursorW(nullptr, IDC_ARROW); cls.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     RegisterClassW(&cls);
@@ -55,14 +56,14 @@ void ShowWireless(Application& controller) {
     HWND window = CreateWindowExW(WS_EX_DLGMODALFRAME, cls.lpszClassName, W(L"无线 ADB", L"无线 ADB 喵"), WS_POPUP | WS_CAPTION | WS_SYSMENU,
         CW_USEDEFAULT, CW_USEDEFAULT, MulDiv(572, dpi, 96), MulDiv(353, dpi, 96), controller.main, nullptr, controller.instance, &dialog);
     if (!window) return;
-    EnableWindow(controller.main, FALSE); ShowWindow(window, SW_SHOW);
+    EnableWindow(owner, FALSE); ShowWindow(window, SW_SHOW);
     MSG message{};
     while (IsWindow(window)) {
         const BOOL result = GetMessageW(&message, nullptr, 0, 0);
         if (result <= 0) { DestroyWindow(window); if (!result) PostQuitMessage(static_cast<int>(message.wParam)); break; }
         if (!IsDialogMessageW(window, &message)) { TranslateMessage(&message); DispatchMessageW(&message); }
     }
-    EnableWindow(controller.main, TRUE); SetForegroundWindow(controller.main);
+    EnableWindow(owner, TRUE); SetForegroundWindow(owner);
 }
 void PresetImage(int shape, const std::wstring& path) {
     Gdiplus::Bitmap image(96, 96, PixelFormat32bppARGB); Gdiplus::Graphics graphics(&image); graphics.Clear(Gdiplus::Color(0, 0, 0, 0));

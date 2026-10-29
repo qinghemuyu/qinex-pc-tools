@@ -1,6 +1,6 @@
 # Link 与 Pointer 的本机协作
 
-两个程序使用 Win32 窗口类、窗口属性与消息协作。实现见 Link 的 `capture.cpp`、`main.cpp`，Pointer 的 `desktop_helpers.cpp`、`main.cpp`。
+Link 内置 Pointer 与独立版均保留 Win32 窗口类、窗口属性与消息协作。实现见 Link 的 `capture.cpp`、`main.cpp`，Pointer 的 `desktop_helpers.cpp`、`main.cpp`。合并版优先选择本进程 Pointer，且只配对同进程的输出窗口；没有内置实例时回退到独立版。内置 Pointer 释放输入时直接使用宿主句柄。
 
 | 对象 | 标识 |
 | --- | --- |
@@ -8,6 +8,9 @@
 | Pointer 全屏输出窗口 | `QPointerCaptureOutput` |
 | Link 主窗口 | `QInEXLinkMain` |
 | 请求放行本机输入 | 注册消息 `QInEX.Pointer.ReleaseLocalInput.v1` |
+| Link 内置光标句柄 | Link 主窗口属性 `QInEX.Pointer.EmbeddedMain.v1` |
+
+合并版的 `QPointerMain` 是 `WS_CHILD`，不能通过顶层窗口枚举发现。Link 优先读取自己的内置句柄属性，子窗口销毁时删除该属性；没有内置实例时再枚举兼容的独立版。宿主内的切页、主题刷新和退出消息定义于 `pointer_runtime.h`，不作为跨进程命令使用。
 
 Pointer 主窗口通过下列属性发布当前热键：
 

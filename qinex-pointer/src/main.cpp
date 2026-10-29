@@ -2,6 +2,8 @@
 #include <shobjidl.h>
 #include "output_hud.h"
 #include "resource.h"
+#include "pointer_runtime.h"
+#include "glass_theme.h"
 
 Application* app;
 
@@ -336,7 +338,7 @@ bool Application::StartFusionOutput() {
 }
 
 int Application::ReleaseLinkInput() {
-    HWND link = FindWindowW(L"QInEXLinkMain", nullptr);
+    HWND link = hostWindow ? hostWindow : FindWindowW(L"QInEXLinkMain", nullptr);
     if (!link) return 0;
     const UINT message = RegisterWindowMessageW(L"QInEX.Pointer.ReleaseLocalInput.v1");
     if (!message) return -1;
@@ -505,6 +507,14 @@ void Application::ShowControlWindow() {
     if (IsWindow(captureWindow))
         SetWindowPos(captureWindow, HWND_NOTOPMOST, 0, 0, 0, 0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    if (hostWindow) {
+        SendMessageW(hostWindow, qp::desktop::kShowPointerMessage, 0, 0);
+        ShowWindow(hostWindow, SW_RESTORE);
+        ShowWindow(main, SW_SHOW);
+        SetForegroundWindow(hostWindow);
+        SetFocus(Item(ID_NAV_FIRST + page));
+        return;
+    }
     ShowWindow(main, SW_RESTORE);
     SetWindowPos(main, HWND_TOPMOST, 0, 0, 0, 0,
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
@@ -715,13 +725,14 @@ void Application::ExitCaptureFullscreen(bool restoreControl) {
     }
     ShowWindow(overlay, SW_HIDE);
     if (restoreControl && IsWindow(main)) {
-        RECT current{}; GetWindowRect(main, &current);
+        const HWND control=hostWindow ? hostWindow : main;
+        RECT current{}; GetWindowRect(control, &current);
         MONITORINFO monitor{sizeof(monitor)};
-        if (GetMonitorInfoW(MonitorFromWindow(main, MONITOR_DEFAULTTONEAREST), &monitor)) {
+        if (GetMonitorInfoW(MonitorFromWindow(control, MONITOR_DEFAULTTONEAREST), &monitor)) {
             const int width = current.right - current.left, height = current.bottom - current.top;
             const int x = std::clamp(current.left, monitor.rcWork.left, std::max(monitor.rcWork.left, monitor.rcWork.right - width));
             const int y = std::clamp(current.top, monitor.rcWork.top, std::max(monitor.rcWork.top, monitor.rcWork.bottom - height));
-            SetWindowPos(main, nullptr, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            SetWindowPos(control, nullptr, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
         }
         ShowControlWindow();
     }
@@ -1433,7 +1444,7 @@ void Application::FinishRegion(bool commit) {
         notice = W(L"区域已选好，请检查四角和中心的对应位置。", L"区域选好啦，请检查四角和中心喵。");
     } else if (regionBefore) { settings = *regionBefore; targetWindow = regionBeforeWindow; }
     regionBefore.reset();
-    HWND h = region; region = nullptr; DestroyWindow(h); ReloadPage(2); ShowWindow(main, SW_RESTORE); SetForegroundWindow(main);
+    HWND h = region; region = nullptr; DestroyWindow(h); ReloadPage(2); ShowControlWindow();
     statusAt = 0;
 }
 
@@ -1662,6 +1673,54 @@ LRESULT CALLBACK RegionProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(h, msg, wp, lp);
 }
 
+void Application::ShowTrayMenu(POINT p) {
+    HMENU menu = CreatePopupMenu();
+    AppendMenuW(menu, MF_STRING, 1, hostWindow ? W(L"PC 光标设置", L"PC 光标设置喵") : W(L"打开 QInEX Pointer", L"打开 QInEX Pointer 喵"));
+    AppendMenuW(menu, MF_STRING, 2, paused ? W(L"恢复指针", L"恢复指针喵") : W(L"暂停指针", L"暂停指针喵"));
+    if (captureOutput.Active()) {
+        AppendMenuW(menu, MF_STRING, 4, captureWindow ? W(L"退出采集全屏", L"退出采集全屏喵") : W(L"进入采集全屏", L"进入采集全屏喵"));
+        AppendMenuW(menu, MF_STRING, 5, W(L"停止采集画面", L"停止采集画面喵"));
+    } else if (IsFusionDisplayMode(settings.mode)) {
+        AppendMenuW(menu, MF_STRING, 4, captureWindow
+            ? W(L"退出纯色融合全屏", L"退出纯色融合全屏喵")
+            : W(L"进入纯色融合全屏", L"进入纯色融合全屏喵"));
+    }
+    if (captureWindow) {
+        const std::wstring hudItem = (outputHudVisible
+            ? std::wstring(W(L"隐藏底部 HUD（", L"隐藏底部 HUD 喵（"))
+            : std::wstring(W(L"显示底部 HUD（", L"显示底部 HUD 喵（"))) +
+            qp::HotkeyText({settings.hudHotkey, settings.hudHotkeyModifiers}) + L"）";
+        const std::wstring rangeItem = W(L"调整光标范围（", L"调整光标范围喵（") +
+            qp::HotkeyText({settings.rangeHotkey, settings.rangeHotkeyModifiers}) + L"）";
+        AppendMenuW(menu, MF_STRING, 6, hudItem.c_str());
+        AppendMenuW(menu, MF_STRING, 7, rangeItem.c_str());
+    }
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    if (!hostWindow) AppendMenuW(menu, MF_STRING, 3, W(L"退出程序", L"退出程序喵"));
+    AppendMenuW(menu, MF_STRING, 8, running ? W(L"断开光标设备", L"断开光标设备喵") : W(L"连接光标设备", L"连接光标设备喵"));
+    SetMenuDefaultItem(menu, 1, FALSE);
+    HWND owner = hostWindow ? hostWindow : main;
+    SetForegroundWindow(owner);
+    int selected = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, p.x, p.y, 0, owner, nullptr); DestroyMenu(menu);
+    if (selected == 1) ShowControlWindow();
+    else if (selected == 2) TogglePause();
+    else if (selected == 8) {
+        if (running) Stop();
+        else if (!settings.setupComplete || HasDraft()) { ShowControlWindow(); SelectPage(1); }
+        else if (Start()) paused = false;
+    }
+    else if (selected == 4) {
+        if (captureWindow) ExitCaptureFullscreen();
+        else if (IsFusionDisplayMode(settings.mode)) StartFusionOutput();
+        else { captureFullscreenRequested = true; captureCreateRetryAt = 0; captureHintUntil = GetTickCount64() + 8000; statusAt = 0; }
+    }
+    else if (selected == 5) { StopCaptureOutput(); ShowControlWindow(); }
+    else if (selected == 6) ToggleOutputHud();
+    else if (selected == 7) BeginCaptureRangeAdjustment();
+    else if (selected == 3) { RequestExit(); return; }
+    PostMessageW(owner, WM_NULL, 0, 0);
+}
+
 LRESULT CALLBACK MainProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     static const UINT taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
     if (taskbarCreated && msg == taskbarCreated) {
@@ -1746,6 +1805,7 @@ LRESULT CALLBACK MainProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         if (app->uiTransition.Active() && !app->UiMotionAllowed()) app->uiTransition.Cancel();
         break;
     case WM_DPICHANGED: {
+        if (app->hostWindow) { app->BuildControls(); return 0; }
         auto* r = reinterpret_cast<RECT*>(lp); SetWindowPos(h, nullptr, r->left, r->top, r->right-r->left, r->bottom-r->top, SWP_NOACTIVATE | SWP_NOZORDER);
         app->BuildControls(); return 0;
     }
@@ -1798,47 +1858,10 @@ LRESULT CALLBACK MainProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 (!app->trayVersion4 && (event == WM_LBUTTONUP || event == WM_LBUTTONDBLCLK)))
             app->ShowControlWindow();
         else if (event == WM_CONTEXTMENU || (!app->trayVersion4 && event == WM_RBUTTONUP)) {
-            HMENU menu = CreatePopupMenu();
-            AppendMenuW(menu, MF_STRING, 1, W(L"打开 QInEX Pointer", L"打开 QInEX Pointer 喵"));
-            AppendMenuW(menu, MF_STRING, 2, app->paused ? W(L"恢复指针", L"恢复指针喵") : W(L"暂停指针", L"暂停指针喵"));
-            if (app->captureOutput.Active()) {
-                AppendMenuW(menu, MF_STRING, 4, app->captureWindow ? W(L"退出采集全屏", L"退出采集全屏喵") : W(L"进入采集全屏", L"进入采集全屏喵"));
-                AppendMenuW(menu, MF_STRING, 5, W(L"停止采集画面", L"停止采集画面喵"));
-            } else if (IsFusionDisplayMode(app->settings.mode)) {
-                AppendMenuW(menu, MF_STRING, 4, app->captureWindow
-                    ? W(L"退出纯色融合全屏", L"退出纯色融合全屏喵")
-                    : W(L"进入纯色融合全屏", L"进入纯色融合全屏喵"));
-            }
-            if (app->captureWindow) {
-                const std::wstring hudItem = (app->outputHudVisible
-                    ? std::wstring(W(L"隐藏底部 HUD（", L"隐藏底部 HUD 喵（"))
-                    : std::wstring(W(L"显示底部 HUD（", L"显示底部 HUD 喵（"))) +
-                    qp::HotkeyText({app->settings.hudHotkey, app->settings.hudHotkeyModifiers}) + L"）";
-                const std::wstring rangeItem = W(L"调整光标范围（", L"调整光标范围喵（") +
-                    qp::HotkeyText({app->settings.rangeHotkey, app->settings.rangeHotkeyModifiers}) + L"）";
-                AppendMenuW(menu, MF_STRING, 6, hudItem.c_str());
-                AppendMenuW(menu, MF_STRING, 7, rangeItem.c_str());
-            }
-            AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(menu, MF_STRING, 3, W(L"退出程序", L"退出程序喵"));
-            SetMenuDefaultItem(menu, 1, FALSE);
             POINT p{};
             if (app->trayVersion4) p = {GET_X_LPARAM(wp), GET_Y_LPARAM(wp)};
             else GetCursorPos(&p);
-            SetForegroundWindow(h);
-            int selected = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, p.x, p.y, 0, h, nullptr); DestroyMenu(menu);
-            if (selected == 1) app->ShowControlWindow();
-            else if (selected == 2) app->TogglePause();
-            else if (selected == 4) {
-                if (app->captureWindow) app->ExitCaptureFullscreen();
-                else if (IsFusionDisplayMode(app->settings.mode)) app->StartFusionOutput();
-                else { app->captureFullscreenRequested = true; app->captureCreateRetryAt = 0; app->captureHintUntil = GetTickCount64() + 8000; app->statusAt = 0; }
-            }
-            else if (selected == 5) { app->StopCaptureOutput(); app->ShowControlWindow(); }
-            else if (selected == 6) app->ToggleOutputHud();
-            else if (selected == 7) app->BeginCaptureRangeAdjustment();
-            else if (selected == 3) { app->RequestExit(); return 0; }
-            PostMessageW(h, WM_NULL, 0, 0);
+            app->ShowTrayMenu(p);
         } return 0;
     }
     case WM_CLOSE: app->HideToTray(); return 0;
@@ -1847,19 +1870,41 @@ LRESULT CALLBACK MainProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         if (wp) DestroyWindow(h);
         return 0;
     case WM_DESTROY:
-        KillTimer(h, 1); app->Shutdown(); if (app->overlay) DestroyWindow(app->overlay); PostQuitMessage(0); return 0;
+        KillTimer(h, 1); app->Shutdown();
+        if (app->overlay) { DestroyWindow(app->overlay); app->overlay = nullptr; }
+        if (app->hostWindow) RemovePropW(app->hostWindow, qp::desktop::kEmbeddedWindowProperty);
+        app->main = nullptr;
+        if (!app->hostWindow) PostQuitMessage(0);
+        return 0;
     }
     return DefWindowProcW(h, msg, wp, lp);
 }
 
-int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
-    // 固定任务栏身份，避免从其他桌面应用启动时继承启动器的分组和图标。
-    SetCurrentProcessExplicitAppUserModelID(L"QInEX.Pointer");
-    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-    Gdiplus::GdiplusStartupInput input; ULONG_PTR token{};
-    if (Gdiplus::GdiplusStartup(&token, &input, nullptr) != Gdiplus::Ok) return 1;
-    INITCOMMONCONTROLSEX common{sizeof(common), ICC_WIN95_CLASSES}; InitCommonControlsEx(&common);
-    Application application; app = &application; app->instance = instance; app->settings = LoadSettings();
+namespace qpointer::desktop {
+namespace {
+std::unique_ptr<Application> application;
+ULONG_PTR graphicsToken{};
+// 独立与嵌入初始化均使用逐屏 DPI；返回时恢复调用线程上下文。
+struct DpiScope {
+    DPI_AWARENESS_CONTEXT previous = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    ~DpiScope() { if (previous) SetThreadDpiAwarenessContext(previous); }
+};
+}
+
+bool ResumeRequested() {
+    const auto settings = LoadSettings();
+    return settings.resumeOnLaunch && settings.setupComplete;
+}
+
+bool Initialize(HINSTANCE instance, HWND host, int show, const RECT* bounds) {
+    if (application) return IsWindow(app->main) != FALSE;
+    DpiScope dpi;
+    Gdiplus::GdiplusStartupInput input;
+    if (Gdiplus::GdiplusStartup(&graphicsToken, &input, nullptr) != Gdiplus::Ok) return false;
+    INITCOMMONCONTROLSEX common{sizeof(common), ICC_WIN95_CLASSES};
+    if (!InitCommonControlsEx(&common)) { Shutdown(); return false; }
+    application = std::make_unique<Application>();
+    app = application.get(); app->instance = instance; app->hostWindow = host; app->settings = LoadSettings();
     app->applicationIcon = static_cast<HICON>(LoadImageW(instance,
         MAKEINTRESOURCEW(IDI_QINEX_POINTER), IMAGE_ICON,
         GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_SHARED));
@@ -1869,14 +1914,20 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     if (!app->applicationIcon) app->applicationIcon = LoadIconW(nullptr, IDI_APPLICATION);
     if (!app->applicationSmallIcon) app->applicationSmallIcon = app->applicationIcon;
     app->storageDirectory = ExeDirectory(); app->page = app->settings.setupComplete ? 0 : 1;
-    int argc = 0; LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    for (int i = 1; i < argc; ++i) {
-        if (wcscmp(argv[i], L"--page") == 0 && i + 1 < argc) app->page = std::clamp(_wtoi(argv[++i]), 0, 5);
+    if (!host) {
+        int argc = 0; LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+        for (int i = 1; i < argc; ++i) {
+            if (wcscmp(argv[i], L"--page") == 0 && i + 1 < argc) app->page = std::clamp(_wtoi(argv[++i]), 0, 5);
+        }
+        if (argv) LocalFree(argv);
     }
-    if (argv) LocalFree(argv);
     app->profiles.Load(app->storageDirectory + L"\\profiles");
     // 首次使用直接进入完整手机框选；已有配置保持原先几何解释。
-    if (GetFileAttributesW(IniPath().c_str()) == INVALID_FILE_ATTRIBUTES) app->settings.simpleMapping = true;
+    if (GetFileAttributesW(IniPath().c_str()) == INVALID_FILE_ATTRIBUTES) {
+        app->settings.simpleMapping = true;
+        // 仅新配置默认随宿主启动；旧配置的选择保持不变，完成向导保存后才生效。
+        if (host) app->settings.resumeOnLaunch = true;
+    }
     app->profiles.Remember(app->settings);
     Messages::anime = app->settings.anime;
     auto registerClass = [&](const wchar_t* name, WNDPROC proc, HBRUSH background) {
@@ -1891,27 +1942,61 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     registerClass(L"QPointerDemo", DemoProc, GetSysColorBrush(COLOR_WINDOW));
     registerClass(L"QPointerAlignment", AlignmentProc, nullptr);
     registerClass(L"QPointerCaptureOutput", CaptureOutputProc, reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
-    HWND main = CreateWindowExW(0, L"QPointerMain", L"QInEX Pointer", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN,
-        CW_USEDEFAULT, CW_USEDEFAULT, 900, 650, nullptr, nullptr, instance, nullptr);
-    if (!main) { Gdiplus::GdiplusShutdown(token); return 1; }
+    RECT area{0, 0, 1064, 744};
+    if (host) { if (bounds) area = *bounds; else GetClientRect(host, &area); }
+    const DWORD style = host ? WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS :
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
+    HWND main = CreateWindowExW(host ? WS_EX_CONTROLPARENT : 0, L"QPointerMain", L"QInEX Pointer", style,
+        host ? area.left : CW_USEDEFAULT, host ? area.top : CW_USEDEFAULT,
+        area.right-area.left, area.bottom-area.top, host, nullptr, instance, nullptr);
+    if (!main) { Shutdown(); return false; }
     app->overlay = CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
         L"QPointerOverlay", L"QInEX Pointer Overlay", WS_POPUP, 0, 0, 64, 64, nullptr, nullptr, instance, nullptr);
+    if (!app->overlay) { Shutdown(); return false; }
+    if (host && !SetPropW(host, kEmbeddedWindowProperty, main)) { Shutdown(); return false; }
     ShowWindow(main, show); UpdateWindow(main);
     app->RegisterPauseHotkey(); app->PublishHotkeys(); app->ReloadCustomCursor(); app->UpdateStatus();
-    if (app->settings.resumeOnLaunch && app->settings.setupComplete) app->Start();
-    MSG message{};
-    while (GetMessageW(&message, nullptr, 0, 0) > 0) {
-        // 新输入立即显示真实页面；过渡层不抢焦点，也不要求用户等动画结束。
-        if (app->uiTransition.Active() && (message.hwnd == main || IsChild(main, message.hwnd)) &&
-                (message.message == WM_LBUTTONDOWN || message.message == WM_RBUTTONDOWN ||
-                 message.message == WM_KEYDOWN || message.message == WM_SYSKEYDOWN ||
-                 message.message == WM_MOUSEWHEEL))
-            app->uiTransition.Cancel();
-        // 普通窗体保留键盘 Tab 导航；截图的 Enter/Esc 由窗口显式处理。
-        if (app->snapshot && message.message == WM_KEYDOWN && (message.wParam == VK_RETURN || message.wParam == VK_ESCAPE || (message.wParam >= VK_LEFT && message.wParam <= VK_DOWN))) { SendMessageW(app->snapshot, message.message, message.wParam, message.lParam); continue; }
-        if (app->calibrationPrompt && message.message == WM_KEYDOWN && message.wParam == VK_ESCAPE) { SendMessageW(app->calibrationPrompt, message.message, message.wParam, message.lParam); continue; }
-        if (app->region && message.message == WM_KEYDOWN && (message.wParam == VK_RETURN || message.wParam == VK_ESCAPE)) { SendMessageW(app->region, message.message, message.wParam, message.lParam); continue; }
-        if (!IsDialogMessageW(main, &message)) { TranslateMessage(&message); DispatchMessageW(&message); }
-    }
-    Gdiplus::GdiplusShutdown(token); return static_cast<int>(message.wParam);
+    if (app->settings.resumeOnLaunch && app->settings.setupComplete && !app->Start()) app->ShowControlWindow();
+    return true;
 }
+
+bool ProcessMessage(MSG& message) {
+    if (!app || !IsWindow(app->main)) return false;
+    HWND main = app->main;
+    // 新输入立即显示真实页面；过渡层不抢焦点，也不要求用户等动画结束。
+    if (app->uiTransition.Active() && (message.hwnd == main || IsChild(main, message.hwnd)) &&
+            (message.message == WM_LBUTTONDOWN || message.message == WM_RBUTTONDOWN ||
+             message.message == WM_KEYDOWN || message.message == WM_SYSKEYDOWN ||
+             message.message == WM_MOUSEWHEEL))
+        app->uiTransition.Cancel();
+    // 普通窗体保留键盘 Tab 导航；截图的 Enter/Esc 由窗口显式处理。
+    const auto belongsTo = [&](HWND window) { return window && (message.hwnd == window || IsChild(window, message.hwnd)); };
+    if (belongsTo(app->snapshot) && message.message == WM_KEYDOWN && (message.wParam == VK_RETURN || message.wParam == VK_ESCAPE || (message.wParam >= VK_LEFT && message.wParam <= VK_DOWN))) { SendMessageW(app->snapshot, message.message, message.wParam, message.lParam); return true; }
+    if (belongsTo(app->calibrationPrompt) && message.message == WM_KEYDOWN && message.wParam == VK_ESCAPE) { SendMessageW(app->calibrationPrompt, message.message, message.wParam, message.lParam); return true; }
+    if (belongsTo(app->region) && message.message == WM_KEYDOWN && (message.wParam == VK_RETURN || message.wParam == VK_ESCAPE)) { SendMessageW(app->region, message.message, message.wParam, message.lParam); return true; }
+    if (!belongsTo(main)) return false;
+    return IsDialogMessageW(main, &message) != FALSE;
+}
+
+void ShowSettings() { DpiScope dpi; if (app) app->ShowControlWindow(); }
+void HideSettings() { if (app && app->main) ShowWindow(app->main, SW_HIDE); }
+void Resize(const RECT& bounds) {
+    if (!app || !app->hostWindow || !app->main) return;
+    SetWindowPos(app->main, nullptr, bounds.left, bounds.top, bounds.right-bounds.left,
+        bounds.bottom-bounds.top, SWP_NOZORDER | SWP_NOACTIVATE);
+    app->BuildControls();
+}
+void ShowMenu(POINT position) { if (app) app->ShowTrayMenu(position); }
+bool CanExit() { DpiScope dpi; return !app || app->CanExit(); }
+
+void Shutdown() {
+    if (application) {
+        if (IsWindow(app->main)) DestroyWindow(app->main);
+        else if (!app->shuttingDown) app->Shutdown();
+        application.reset();
+        app = nullptr;
+    }
+    // 所有 GDI+ 图像及过渡资源必须先析构。
+    if (graphicsToken) { Gdiplus::GdiplusShutdown(graphicsToken); graphicsToken = 0; }
+}
+} // namespace qpointer::desktop

@@ -2,6 +2,7 @@
 #include "app.h"
 #include "hid_usage.h"
 #include "performance.h"
+#include "pointer_runtime.h"
 #include <algorithm>
 #include <climits>
 #include <thread>
@@ -92,12 +93,29 @@ void refreshPointerHotkeys() {
     if (now < s_pointerHotkeys.refreshAt &&
             (!s_pointerHotkeys.main || IsWindow(s_pointerHotkeys.main))) return;
     s_pointerHotkeys.refreshAt = now + 100;
-    s_pointerHotkeys.main = FindWindowW(L"QPointerMain", nullptr);
-    s_pointerHotkeys.output = FindWindowW(L"QPointerCaptureOutput", nullptr);
+    // 合并版优先选择本进程的光标，防止旧独立版仍开着时把快捷键发给另一份窗口。
+    HWND first = nullptr;
+    s_pointerHotkeys.main = static_cast<HWND>(GetPropW(g.hwnd, qpointer::desktop::kEmbeddedWindowProperty));
+    if (!IsWindow(s_pointerHotkeys.main)) s_pointerHotkeys.main = nullptr;
+    for (HWND window = FindWindowExW(nullptr, nullptr, L"QPointerMain", nullptr); window && !s_pointerHotkeys.main;
+            window = FindWindowExW(nullptr, window, L"QPointerMain", nullptr)) {
+        if (!first) first = window;
+        DWORD process = 0; GetWindowThreadProcessId(window, &process);
+        if (process == GetCurrentProcessId()) { s_pointerHotkeys.main = window; break; }
+    }
+    if (!s_pointerHotkeys.main) s_pointerHotkeys.main = first;
+    s_pointerHotkeys.output = nullptr;
     if (!s_pointerHotkeys.main) {
         for (auto& binding : s_pointerHotkeys.bindings) binding = {};
         s_pointerHotkeys.output = nullptr;
         return;
+    }
+    DWORD pointerProcess = 0;
+    GetWindowThreadProcessId(s_pointerHotkeys.main, &pointerProcess);
+    for (HWND window = FindWindowExW(nullptr, nullptr, L"QPointerCaptureOutput", nullptr); window;
+            window = FindWindowExW(nullptr, window, L"QPointerCaptureOutput", nullptr)) {
+        DWORD process = 0; GetWindowThreadProcessId(window, &process);
+        if (process == pointerProcess) { s_pointerHotkeys.output = window; break; }
     }
     for (size_t index = 0; index < POINTER_HOTKEY_COUNT; ++index)
         s_pointerHotkeys.bindings[index] = readPointerHotkey(

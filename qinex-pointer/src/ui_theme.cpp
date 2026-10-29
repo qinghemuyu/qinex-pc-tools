@@ -1,5 +1,7 @@
 #include "app.h"
 #include "ui_theme.h"
+#include "glass_theme.h"
+#include "pointer_runtime.h"
 #include <new>
 #include <uxtheme.h>
 
@@ -13,6 +15,12 @@ struct ThemeControlState {
     bool hovered = false;
     double from = 0, target = 0;
     ULONGLONG started = 0;
+    double pressFrom = 0, pressTarget = 0;
+    ULONGLONG pressStarted = 0;
+    double Press() const {
+        const double t = std::min(1.0, static_cast<double>(GetTickCount64() - pressStarted) / 130.0);
+        return pressFrom + (pressTarget - pressFrom) * (t * t * (3.0 - 2.0 * t));
+    }
     double Hover() const {
         const double t = std::min(1.0, static_cast<double>(GetTickCount64() - started) / kHoverDuration);
         return from + (target - from) * (t * t * (3.0 - 2.0 * t));
@@ -35,23 +43,7 @@ void Fill(HDC dc, const RECT& rect, COLORREF color) {
 }
 
 void Round(HDC dc, RECT rect, int radius, COLORREF fill, COLORREF border) {
-    if (rect.right <= rect.left || rect.bottom <= rect.top) return;
-    Gdiplus::Graphics graphics(dc);
-    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-    const float x = rect.left + .5f, y = rect.top + .5f;
-    const float w = static_cast<float>(rect.right - rect.left - 1);
-    const float h = static_cast<float>(rect.bottom - rect.top - 1);
-    const float d = std::min<float>(radius * 2.0f, std::min(w, h));
-    Gdiplus::GraphicsPath path;
-    path.AddArc(x, y, d, d, 180, 90);
-    path.AddArc(x + w - d, y, d, d, 270, 90);
-    path.AddArc(x + w - d, y + h - d, d, d, 0, 90);
-    path.AddArc(x, y + h - d, d, d, 90, 90);
-    path.CloseFigure();
-    Gdiplus::SolidBrush brush(Color(fill));
-    Gdiplus::Pen pen(Color(border), 1);
-    graphics.FillPath(&brush, &path);
-    graphics.DrawPath(&pen, &path);
+    qp::glass::Surface(dc, rect, float(radius), fill, border);
 }
 
 void TextLine(HDC dc, const std::wstring& text, RECT rect, HFONT font, COLORREF color,
@@ -82,6 +74,7 @@ LRESULT CALLBACK ThemeControlProc(HWND window, UINT message, WPARAM wp, LPARAM l
     const bool edit = ClassIs(window, L"Edit");
     const bool button = ClassIs(window, L"Button");
     const bool combo = ClassIs(window, L"ComboBox");
+    const bool label = ClassIs(window, L"Static");
     if (message == WM_NCDESTROY) {
         KillTimer(window, kHoverTimer);
         RemoveWindowSubclass(window, ThemeControlProc, kThemeSubclass);
@@ -93,6 +86,14 @@ LRESULT CALLBACK ThemeControlProc(HWND window, UINT message, WPARAM wp, LPARAM l
         if (edit) RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_FRAME);
         else InvalidateRect(window, nullptr, FALSE);
     };
+    if (message == BM_SETSTATE && button) {
+        state->pressFrom = state->Press();
+        state->pressTarget = wp ? 1.0 : 0.0;
+        state->pressStarted = GetTickCount64();
+        if (!application.UiMotionAllowed() || !SetTimer(window, kHoverTimer, 16, nullptr))
+            state->pressFrom = state->pressTarget;
+        repaint();
+    }
     if ((message == WM_MOUSEMOVE && !state->hovered) || message == WM_MOUSELEAVE) {
         state->from = state->Hover();
         state->hovered = message == WM_MOUSEMOVE;
@@ -111,8 +112,10 @@ LRESULT CALLBACK ThemeControlProc(HWND window, UINT message, WPARAM wp, LPARAM l
         repaint();
     } else if (message == WM_TIMER && wp == kHoverTimer) {
         if (!IsWindowVisible(window) || !application.UiMotionAllowed() ||
-                GetTickCount64() - state->started >= kHoverDuration) {
+                (GetTickCount64() - state->started >= kHoverDuration &&
+                 GetTickCount64() - state->pressStarted >= 130)) {
             state->from = state->target;
+            state->pressFrom = state->pressTarget;
             KillTimer(window, kHoverTimer);
         }
         repaint();
@@ -120,10 +123,11 @@ LRESULT CALLBACK ThemeControlProc(HWND window, UINT message, WPARAM wp, LPARAM l
     } else if ((message == WM_SHOWWINDOW && !wp) || (message == WM_ENABLE && !wp)) {
         KillTimer(window, kHoverTimer);
         state->from = state->target = 0;
+        state->pressFrom = state->pressTarget = 0;
         state->hovered = false;
     }
     // 保留原生按钮的键盘、复选框和下拉选择行为，只替换绘制。
-    if ((button || combo) && (message == WM_PAINT || message == WM_PRINTCLIENT || message == WM_PRINT)) {
+    if ((button || combo || label) && (message == WM_PAINT || message == WM_PRINTCLIENT || message == WM_PRINT)) {
         if (button && (GetWindowLongPtrW(window, GWL_STYLE) & BS_TYPEMASK) == BS_OWNERDRAW)
             return DefSubclassProc(window, message, wp, lp);
         if (message == WM_PRINT && (!(lp & PRF_CLIENT) ||
@@ -134,7 +138,7 @@ LRESULT CALLBACK ThemeControlProc(HWND window, UINT message, WPARAM wp, LPARAM l
         if (message == WM_PAINT) EndPaint(window, &paint);
         return 0;
     }
-    if ((button || combo) && message == WM_ERASEBKGND) return 1;
+    if ((button || combo || label) && message == WM_ERASEBKGND) return 1;
     if (edit && message == WM_NCCALCSIZE) {
         auto* rect = wp ? &reinterpret_cast<NCCALCSIZE_PARAMS*>(lp)->rgrc[0]
                         : reinterpret_cast<RECT*>(lp);
@@ -173,7 +177,7 @@ LRESULT CALLBACK ThemeControlProc(HWND window, UINT message, WPARAM wp, LPARAM l
 void Application::ThemeControl(HWND control) {
     if (!control) return;
     if (ClassIs(control, L"Button") || ClassIs(control, L"ComboBox") ||
-            ClassIs(control, L"Edit")) {
+            ClassIs(control, L"Edit") || ClassIs(control, L"Static")) {
         SetWindowTheme(control, L"", L"");
         auto* controlState = new(std::nothrow) ThemeControlState{this};
         if (!controlState) return;
@@ -189,13 +193,15 @@ void Application::ThemeControl(HWND control) {
 bool Application::UiMotionAllowed() const {
     // 动效仅在前台设置时短暂运行；采集、全屏、远程会话和系统关闭动画时直接呈现。
     if (!main || uiBuilding || shuttingDown || !IsWindowVisible(main) || IsIconic(main) ||
-            GetForegroundWindow() != main || captureWindow || captureOutput.Active() ||
+            GetForegroundWindow() != (hostWindow ? hostWindow : main) || captureWindow || captureOutput.Active() ||
             GetSystemMetrics(SM_REMOTESESSION)) return false;
     BOOL enabled = FALSE;
     return SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &enabled, 0) && enabled;
 }
 
 void Application::RefreshUiTheme() {
+    qp::glass::light = settings.anime;
+    if (hostWindow) PostMessageW(hostWindow, qp::desktop::kThemeChangedMessage, 0, 0);
     const BOOL dark = !settings.anime;
     DwmSetWindowAttribute(main, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &dark, sizeof(dark));
     const auto palette = qp::PointerPalette(settings.anime);
@@ -225,34 +231,25 @@ LRESULT Application::ThemeControlColor(HDC dc, HWND control, UINT message) {
 void Application::PaintChrome(HDC dc) {
     const auto palette = qp::PointerPalette(settings.anime);
     RECT client{}; GetClientRect(main, &client);
-    Fill(dc, client, palette.background);
-    RECT sidebar{0, 0, Px(184), client.bottom};
-    Fill(dc, sidebar, palette.sidebar);
-    RECT divider{Px(183), 0, Px(184), client.bottom};
-    Fill(dc, divider, palette.border);
-    RECT logo{Px(20), Px(29), Px(54), Px(63)};
-    Round(dc, logo, Px(9), RGB(255, 255, 255), RGB(255, 255, 255));
-    DrawIconEx(dc, Px(24), Px(33), applicationIcon, Px(26), Px(26), 0, nullptr, DI_NORMAL);
-    TextLine(dc, L"QInEX", {Px(64), Px(24), Px(172), Px(53)}, headingFont, palette.text);
-    TextLine(dc, L"POINTER", {Px(65), Px(53), Px(172), Px(73)}, uiSmallFont, palette.secondary);
-    TextLine(dc, W(L"工作空间", L"指针小窝"), {Px(22), Px(97), Px(160), Px(121)},
-        uiSmallFont, palette.secondary);
-    RECT panel{Px(196), Px(128), Px(1052), page == 5 ? client.bottom - Px(18) : Px(566)};
-    Round(dc, panel, Px(14), palette.panel, palette.border);
-    if (page != 5) {
-        RECT footer{Px(184), Px(632), client.right, client.bottom};
-        Fill(dc, footer, palette.panel);
-        RECT line{Px(184), Px(632), client.right, Px(633)};
-        Fill(dc, line, palette.border);
+    RECT background = client;
+    if (hostWindow) {
+        GetClientRect(hostWindow, &background);
+        MapWindowPoints(hostWindow, main, reinterpret_cast<POINT*>(&background), 2);
     }
-    TextLine(dc, settings.anime ? L"二次元模式" : L"普通模式",
-        {Px(22), client.bottom - Px(146), Px(166), client.bottom - Px(123)},
-        uiSmallFont, palette.secondary);
-    TextLine(dc, W(L"关闭窗口后托盘运行", L"关掉窗口，也在托盘等你"),
-        {Px(22), client.bottom - Px(57), Px(168), client.bottom - Px(35)},
-        uiSmallFont, palette.secondary);
-    TextLine(dc, L"QInEX Pointer", {Px(22), client.bottom - Px(34), Px(168), client.bottom - Px(14)},
-        uiSmallFont, palette.disabled);
+    qp::glass::Background(dc, background);
+    RECT sidebar{Px(2), Px(2), Px(184), client.bottom-Px(2)};
+    Round(dc, sidebar, Px(12), palette.sidebar, palette.border);
+    TextLine(dc, W(L"光标设置", L"光标设置喵"), {Px(22),Px(28),Px(170),Px(62)}, headingFont,palette.text);
+    TextLine(dc, L"POINTER / CONTROL", {Px(22),Px(76),Px(170),Px(102)}, uiSmallFont,palette.accent);
+    RECT panel{Px(196), Px(128), Px(1052), page == 5 ? client.bottom-Px(18) : Px(566)};
+    Round(dc, panel, Px(12), palette.panel, palette.border);
+    if (page != 5) {
+        RECT footer{Px(196),Px(632),Px(1052),Px(696)};
+        Round(dc, footer,Px(12),palette.panel,palette.border);
+    }
+    TextLine(dc, hostWindow ? W(L"设备与光标在同一窗口", L"设备与光标都在这里喵") : W(L"关闭后继续后台运行", L"关闭后继续后台运行喵"),
+        {Px(18),client.bottom-Px(56),Px(170),client.bottom-Px(30)},uiSmallFont,palette.secondary);
+    TextLine(dc,hostWindow?L"QInEX / TOUCH LINK":L"QInEX / POINTER",{Px(22),client.bottom-Px(31),Px(170),client.bottom-Px(10)},uiSmallFont,palette.disabled);
 }
 
 void Application::PaintThemedControl(HWND control, HDC target) {
@@ -274,23 +271,43 @@ void Application::PaintThemedControl(HWND control, HDC target) {
     DWORD_PTR reference = 0;
     GetWindowSubclass(control, ThemeControlProc, kThemeSubclass, &reference);
     const double hover = enabled && reference ? reinterpret_cast<ThemeControlState*>(reference)->Hover() : 0;
-    const bool focused = GetFocus() == control;
+    const bool focused = GetFocus() == control &&
+        !(SendMessageW(control, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS);
     const DWORD kind = static_cast<DWORD>(GetWindowLongPtrW(control, GWL_STYLE)) & BS_TYPEMASK;
     const bool combo = ClassIs(control, L"ComboBox");
     const bool checkbox = !combo && kind == BS_AUTOCHECKBOX;
     const bool group = !combo && kind == BS_GROUPBOX;
-    const bool pressed = !combo && (SendMessageW(control, BM_GETSTATE, 0, 0) & BST_PUSHED);
+    const double press = !combo && reference ? reinterpret_cast<ThemeControlState*>(reference)->Press() : 0;
     const bool selected = nav && page == id - ID_NAV_FIRST;
     const bool primary = !checkbox && !group && PrimaryButton(id);
     const COLORREF parent = nav || theme ? palette.sidebar :
         id == ID_GUIDE ? palette.background : palette.panel;
-    Fill(dc, rect, parent);
+    POINT origin{}; MapWindowPoints(control, main, &origin, 1);
+    const int saved=SaveDC(dc);
+    SetViewportOrgEx(dc,-origin.x,-origin.y,nullptr);
+    PaintChrome(dc);
+    RestoreDC(dc,saved);
     const auto label = Text(control);
+    if (ClassIs(control,L"Static")) {
+        const auto labelFont=reinterpret_cast<HFONT>(SendMessageW(control,WM_GETFONT,0,0));
+        RECT text=rect;
+        const DWORD style=static_cast<DWORD>(GetWindowLongPtrW(control,GWL_STYLE));
+        UINT align=(style & SS_TYPEMASK)==SS_CENTER ? DT_CENTER : DT_LEFT;
+        TextLine(dc,label,text,labelFont?labelFont:font,enabled ?
+            ((id==ID_PAGE_TITLE || id==ID_HOME_STATE)?palette.text:palette.secondary):palette.disabled,
+            align | DT_WORDBREAK | DT_NOPREFIX);
+        BitBlt(target,0,0,rect.right,rect.bottom,dc,0,0,SRCCOPY);
+        SelectObject(dc,previous); DeleteObject(bitmap); DeleteDC(dc); return;
+    }
     if (nav) {
-        if (selected || hover > 0) {
+        if (selected || hover > 0 || focused) {
             const COLORREF fill = selected ? Mix(palette.selected, palette.hover, hover * .25)
                 : Mix(parent, palette.hover, hover);
-            Round(dc, rect, Px(10), fill, fill);
+            RECT surface = rect;
+            const int inset = static_cast<int>(Px(2) * press + .5);
+            InflateRect(&surface, -inset, -inset);
+            Round(dc, surface, Px(8), fill, focused ? palette.accent :
+                Mix(palette.border,palette.accent,std::min(1.0,(selected?.22:0.0)+hover*.4+press*.3)));
         }
         if (selected) {
             RECT mark{0, Px(16), Px(3), rect.bottom - Px(16)};
@@ -312,7 +329,7 @@ void Application::PaintThemedControl(HWND control, HDC target) {
         Round(dc, box, Px(4), checked && enabled ? palette.accent : palette.field,
             focused ? palette.accent : Mix(palette.border, palette.accent, hover));
         if (checked) {
-            HPEN pen = CreatePen(PS_SOLID, std::max(1, Px(2)), enabled ? palette.accentText : palette.disabled);
+            HPEN pen = CreatePen(PS_SOLID, std::max(1, Px(2)), enabled ? palette.accent : palette.disabled);
             auto oldPen = SelectObject(dc, pen);
             MoveToEx(dc, Px(5), top + Px(8), nullptr);
             LineTo(dc, Px(8), top + Px(11)); LineTo(dc, Px(14), top + Px(5));
@@ -326,14 +343,16 @@ void Application::PaintThemedControl(HWND control, HDC target) {
         TextLine(dc, label, caption, uiSmallFont, palette.secondary);
     } else {
         const COLORREF fill = !enabled ? palette.field :
-            primary ? Mix(palette.accent, pressed ? palette.accentText : palette.text, pressed ? .16 : hover * .12) :
-            pressed ? palette.selected : Mix(palette.field, palette.hover, hover);
+            primary ? Mix(palette.accent, palette.text, hover * .12) :
+            Mix(Mix(palette.field, palette.hover, hover), palette.selected, press);
         RECT surface = rect;
-        if (pressed && enabled) InflateRect(&surface, -Px(1), -Px(1));
-        Round(dc, surface, Px(8), fill, focused ? palette.accent : primary && enabled ? fill : palette.border);
+        const int inset = enabled ? static_cast<int>(Px(2) * press + .5) : 0;
+        InflateRect(&surface, -inset, -inset);
+        Round(dc, surface, Px(8), fill, focused ? palette.accent : primary && enabled ? fill :
+            Mix(palette.border,palette.accent,std::min(1.0,hover*.5+press*.5)));
         RECT text{Px(10), 0, rect.right - Px(combo ? 31 : 10), rect.bottom};
         TextLine(dc, label, text, primary ? uiStrongFont : font,
-            !enabled ? palette.disabled : primary ? palette.accentText : palette.text,
+            !enabled ? palette.disabled : primary ? palette.accent : palette.text,
             (combo ? DT_LEFT : DT_CENTER) | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         if (combo) {
             HPEN pen = CreatePen(PS_SOLID, std::max(1, Px(2)), enabled ? palette.secondary : palette.disabled);
@@ -343,10 +362,6 @@ void Application::PaintThemedControl(HWND control, HDC target) {
             LineTo(dc, x, y + Px(2)); LineTo(dc, x + Px(4), y - Px(2));
             SelectObject(dc, oldPen); DeleteObject(pen);
         }
-    }
-    if (focused && !combo && !group) {
-        RECT focus = rect; InflateRect(&focus, -Px(4), -Px(4));
-        SetTextColor(dc, palette.text); SetBkColor(dc, parent); DrawFocusRect(dc, &focus);
     }
     BitBlt(target, 0, 0, rect.right, rect.bottom, dc, 0, 0, SRCCOPY);
     SelectObject(dc, previous); DeleteObject(bitmap); DeleteDC(dc);
