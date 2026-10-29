@@ -1,0 +1,3 @@
+#include "resource.h"
+
+IDI_QINEX_POINTER ICON "app_icon.ico"

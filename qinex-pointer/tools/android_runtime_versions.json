@@ -1,0 +1,21 @@
+{
+  "adb": "35.0.2-12147458",
+  "build_tools": "34.0.0",
+  "temurin": {
+    "version": {
+      "semver": "17.0.20.1+1"
+    },
+    "binary": {
+      "package": {
+        "name": "OpenJDK17U-jdk_x64_windows_hotspot_17.0.20.1_1.zip",
+        "link": "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.20.1%2B1/OpenJDK17U-jdk_x64_windows_hotspot_17.0.20.1_1.zip",
+        "checksum": "e53a79c3c3d86865bd7e787903884331068e71321714ffd44f145785affc7cb0"
+      }
+    }
+  },
+  "adb_package": {
+    "name": "platform-tools_r35.0.2-win.zip",
+    "link": "https://dl.google.com/android/repository/platform-tools_r35.0.2-win.zip",
+    "checksum": "2975a3eac0b19182748d64195375ad056986561d994fffbdc64332a516300bb9"
+  }
+}

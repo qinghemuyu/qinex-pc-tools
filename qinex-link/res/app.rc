@@ -1,0 +1,4 @@
+// QInEX-Link 资源脚本:程序图标(窗口/任务栏/托盘/exe 文件图标共用)。
+// ID 1 是首个图标资源 → Explorer 取它作 exe 文件图标;代码里用 IDI_APPICON 显式加载。
+#define IDI_APPICON 1
+IDI_APPICON ICON "app.ico"

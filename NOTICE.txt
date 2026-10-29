@@ -1,0 +1,6 @@
+Required Notice: Copyright (c) 2026 qinghemuyu and QInEX PC Tools contributors.
+Required Notice: QInEX PC Tools original code is licensed under PolyForm Noncommercial License 1.0.0. Commercial use requires separate permission from the relevant rights holders.
+
+项目原创代码、文档与原创资源适用 LICENSE.txt。
+第三方代码和组件保留原许可，详见 THIRD_PARTY_NOTICES.md。
+中文许可说明见 docs/许可说明.md，正式条款以 LICENSE.txt 为准。

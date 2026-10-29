@@ -1,0 +1,19 @@
+name: Windows 桌面构建
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  desktop:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - name: 获取源码
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: 构建与测试
+        shell: pwsh
+        run: ./build.ps1 -Test
