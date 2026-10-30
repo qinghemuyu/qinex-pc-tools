@@ -1,4 +1,4 @@
-QInEX-Link 内置 PC 光标 · v0.1.13 合并版
+QInEX-Link 内置 PC 光标 · v0.1.14 合并版
 
 运行 QInEX-Link.exe 即可；无需再启动 QInEX-Pointer.exe。
 主窗口顶部“设备连接”“光标设置”切换内容，也可按 Ctrl+Tab。

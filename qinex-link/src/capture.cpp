@@ -12,7 +12,7 @@
 namespace {
 
 std::thread s_thread;
-DWORD  s_tid = 0;
+std::atomic<DWORD> s_tid{0};
 HHOOK  s_kbHook = nullptr, s_msHook = nullptr;
 HWND   s_captureWnd = nullptr;
 std::atomic<bool> s_hotkeyDown{false};
@@ -772,7 +772,7 @@ void dispatchRawInputBatch(HRAWINPUT current, uint64_t currentMessageUs) {
 
     // 当前 WM_INPUT 已经被 GetMessage 取出，不在 GetRawInputBuffer 的返回集合中，必须先读。
     UINT currentSize = 0;
-    if (GetRawInputData(current, RID_INPUT, nullptr, &currentSize,
+    if (current && GetRawInputData(current, RID_INPUT, nullptr, &currentSize,
                         sizeof(RAWINPUTHEADER)) == 0 && currentSize > 0 &&
         currentSize <= 64 * 1024) {
         if (currentBuf.size() < currentSize) currentBuf.resize(currentSize);
@@ -813,11 +813,14 @@ void dispatchRawInputBatch(HRAWINPUT current, uint64_t currentMessageUs) {
     size_t mouseCount = 0;
     for (const auto& p : pending) if (p.type == RIM_TYPEMOUSE) ++mouseCount;
 
-    // GetRawInputBuffer 不附带逐报告 MSG.time。用“当前消息入队时刻 → 本次排空时刻”均匀恢复
-    // 批内时间线；1K 鼠标后台积压 10 个报告时会得到约 1ms 间隔，而不是十个同拍合并。
+    // GetRawInputBuffer 不附带逐报告时间戳。用上一批/当前消息到排空时刻估算批内间隔，
+    // 避免十份报告同拍合并；这不是设备侧精确采样时间。
     uint64_t mouseUs = s_lastRawMouseTimelineUs.load(std::memory_order_relaxed);
     uint64_t gapUs = 1000;
-    uint64_t batchEndUs = GetTickCount64() * 1000ull;
+    // 同为系统启动以来的时间；避免 GetTickCount64 的粗粒度把连续批次压到同一刻。
+    ULONGLONG interruptTime = 0;
+    QueryInterruptTimePrecise(&interruptTime);
+    uint64_t batchEndUs = interruptTime / 10;
     size_t followingMouse = mouseCount - (currentIsMouse ? 1u : 0u);
 
     if (currentIsMouse) {
@@ -874,11 +877,92 @@ LRESULT CALLBACK capWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(h, msg, wp, lp);
 }
 
+// 后台 WM_INPUT 通知可能被系统合批。转发时独立唤醒读取缓冲，不能仅等待通知。
+// 消息仍正常分派，保留 LL Hook、键盘热键以及已取出的当前 HRAWINPUT 的处理。
+void runCaptureMessageLoop() {
+    HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr,
+        CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_MODIFY_STATE | SYNCHRONIZE);
+    if (!timer) timer = CreateWaitableTimerW(nullptr, FALSE, nullptr);
+    bool armed = false;
+    bool running = true;
+    while (running) {
+        const bool active = g.forwarding.load();
+        if (active && timer && !armed) {
+            LARGE_INTEGER due{};
+            due.QuadPart = -10000; // 1ms，自动复位；不忙等，不占用 UI 线程。
+            armed = SetWaitableTimer(timer, &due, 1, nullptr, nullptr, FALSE) != FALSE;
+            if (!armed) {
+                g.log(L"输入采样定时器启动失败，已回退消息超时唤醒");
+                CloseHandle(timer);
+                timer = nullptr;
+            }
+        } else if (!active && armed) {
+            CancelWaitableTimer(timer);
+            armed = false;
+        }
+        if (active) dispatchRawInputBatch(nullptr, 0);
+        // 有界分派，避免高频消息持续到达时饿死下一轮缓冲读取。
+        MSG m{};
+        unsigned dispatched = 0;
+        auto peek = [&]() -> bool {
+            if (!active) return PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE);
+            // 主动读取期间把 WM_INPUT 留给 GetRawInputBuffer，避免在两次读取之间
+            // 偶尔混入粗粒度 MSG.time；其它消息（包括 Hook/WM_QUIT）照常处理。
+            return PeekMessageW(&m, nullptr, 0, WM_INPUT - 1, PM_REMOVE) ||
+                   PeekMessageW(&m, nullptr, WM_INPUT + 1, UINT_MAX, PM_REMOVE);
+        };
+        while (dispatched < 64 && peek()) {
+            if (m.message == WM_QUIT) { running = false; break; }
+            TranslateMessage(&m);
+            DispatchMessageW(&m);
+            ++dispatched;
+        }
+        if (!running) break;
+        if (dispatched == 64 || active != g.forwarding.load()) continue;
+        // 后台限频时 QS_RAWINPUT 可已经置位，但 GetRawInputBuffer 尚无可读报告。
+        // 此时等待 RAWINPUT 会立即反复返回，形成空转；主动模式只由定时器或其它消息唤醒。
+        const DWORD wakeMask = active ? (QS_ALLINPUT & ~QS_RAWINPUT) : QS_ALLINPUT;
+        DWORD result = MsgWaitForMultipleObjectsEx(armed ? 1 : 0, armed ? &timer : nullptr,
+            active && !armed ? 1 : INFINITE, wakeMask, MWMO_INPUTAVAILABLE);
+        if (result == WAIT_FAILED) {
+            g.log(L"输入捕获等待失败，请停止转发并重启程序");
+            break;
+        }
+    }
+    if (timer) { CancelWaitableTimer(timer); CloseHandle(timer); }
+}
+
+bool registerCaptureDevices(HWND window) {
+    // Windows 11 的后台 Raw Mouse 合并发生在用户态缓冲之前，单靠提优先级/轮询无效。
+    // 0x8000 是尚未进入公开 SDK 的逐接收者兼容标志，仅用于鼠标 INPUTSINK；
+    // 不修改全局限频策略或窗口焦点。来源及同机 A/B 验证方法见 docs/测试与验收.md。
+    // 未来/旧系统可能拒绝该标志，必须重试标准注册，保证键鼠仍能工作。
+    constexpr DWORD rawMouseNoThrottleCompat = 0x00008000;
+    RAWINPUTDEVICE devices[2] = {
+        {0x01, 0x02, RIDEV_INPUTSINK | rawMouseNoThrottleCompat, window},
+        {0x01, 0x06, RIDEV_INPUTSINK, window},
+    };
+    if (RegisterRawInputDevices(devices, 2, sizeof(RAWINPUTDEVICE))) {
+        g.log(L"后台鼠标高频接收请求成功（不占用窗口焦点）");
+        return true;
+    }
+    const DWORD enhancedError = GetLastError();
+    devices[0].dwFlags = RIDEV_INPUTSINK;
+    if (RegisterRawInputDevices(devices, 2, sizeof(RAWINPUTDEVICE))) {
+        g.log(L"后台鼠标高频接收不可用(" + std::to_wstring(enhancedError) +
+              L")，已回退标准接收；若后台转动断续，请保存日志反馈系统版本");
+        return true;
+    }
+    g.log(L"Raw Input 注册失败(" + std::to_wstring(GetLastError()) +
+          L")，请重启程序或检查系统输入设备");
+    return false;
+}
+
 void threadMain() {
     s_tid = GetCurrentThreadId();
     // Raw Input 与两个 LL Hook 共用本消息线程。游戏成为前台后若此线程被 EcoQoS/后台调度
     // 压住,实机表现为约 10ms 才处理一批鼠标报告。此线程每次只做入队/状态 diff,随后立即
-    // 回到 GetMessage 阻塞,可安全与 sender 同用 TIME_CRITICAL(15)。
+    // 回到消息/定时器等待，不执行忙等。
     auto perf = performance::EnableCurrentThreadHighPerformance(THREAD_PRIORITY_TIME_CRITICAL);
     if (!perf.priority) {
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
@@ -899,11 +983,7 @@ void threadMain() {
     s_captureWnd = wnd;
     if (!wnd) g.log(L"输入捕获消息窗创建失败,键鼠转发不可用");
 
-    RAWINPUTDEVICE rid[2]{};
-    rid[0] = {0x01, 0x02, RIDEV_INPUTSINK, wnd};                     // 鼠标
-    rid[1] = {0x01, 0x06, RIDEV_INPUTSINK, wnd};                     // 键盘
-    if (!RegisterRawInputDevices(rid, 2, sizeof(RAWINPUTDEVICE)))
-        g.log(L"Raw Input 注册失败,请重启程序或检查系统输入设备");
+    if (wnd) registerCaptureDevices(wnd);
 
     // LL 钩子装在本线程(有消息泵);未独占/未绑键时钩子体一行判断直通,开销可忽略
     s_kbHook = SetWindowsHookExW(WH_KEYBOARD_LL, kbHook, wc.hInstance, 0);
@@ -911,11 +991,7 @@ void threadMain() {
     if (!s_kbHook) g.log(L"键盘全局 Hook 安装失败,独占键盘/全局热键不可用");
     if (!s_msHook) g.log(L"鼠标全局 Hook 安装失败,独占鼠标不可用");
 
-    MSG m;
-    while (GetMessageW(&m, nullptr, 0, 0) > 0) {
-        TranslateMessage(&m);
-        DispatchMessageW(&m);
-    }
+    runCaptureMessageLoop();
     if (s_kbHook) { UnhookWindowsHookEx(s_kbHook); s_kbHook = nullptr; }
     if (s_msHook) { UnhookWindowsHookEx(s_msHook); s_msHook = nullptr; }
     DestroyWindow(wnd);
@@ -938,6 +1014,10 @@ void stop() {
     if (s_tid) PostThreadMessageW(s_tid, WM_QUIT, 0, 0);
     if (s_thread.joinable()) s_thread.join();
     if (evtInput) { CloseHandle(evtInput); evtInput = nullptr; }
+}
+
+void wake() {
+    if (DWORD tid = s_tid.load()) PostThreadMessageW(tid, WM_NULL, 0, 0);
 }
 
 bool popEdge(Edge& e) {
