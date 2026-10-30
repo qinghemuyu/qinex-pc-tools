@@ -233,7 +233,7 @@ git diff --check
 
 文档/仓库检查脚本需要 Python；这不改变默认桌面程序构建不依赖 Python 的约定。Android 构建命令和依赖参数直接采用构建指南中的完整示例，不写维护者本机路径。
 
-现有 CTest 包括 `link_protocol`、`link_embedded_ui`、`pointer_core_behavior`、`pointer_capture_diagnostics`、`pointer_embedded_runtime`，启用 Android 后增加 `pointer_android_behavior`。Link 单项目构建也验证其内置 Pointer 模块。当前 GitHub CI 只验证默认桌面组合，不能将其通过说成 Android 完整版通过。
+现有 CTest 包括 `link_protocol`、`link_embedded_ui`、`link_background_capture`、`pointer_core_behavior`、`pointer_capture_diagnostics`、`pointer_embedded_runtime`，启用 Android 后增加 `pointer_android_behavior`。Link 单项目构建也验证其内置 Pointer 模块。当前 GitHub CI 只验证默认桌面组合，不能将其通过说成 Android 完整版通过。
 
 修复可自动验证的行为缺陷时，优先补覆盖实际失败的回归测试；不要为简单文案添加镜像实现的测试，也不要为了变绿删除断言、降低期望或禁用用例。测试使用独立临时目录，避免污染用户配置。
 
@@ -253,6 +253,14 @@ git diff --check
 `package.ps1` 只生成默认桌面版本地 ZIP，会先运行构建测试。打包使用明确文件清单；禁止递归复制整个开发目录或构建目录作为发布包。
 
 本地构建、打包与 GitHub Release 是不同操作。只有获得明确发布授权才向远端上传产物、推送标签或更新发行说明；用户要求“先本地看”时必须保持本地。
+
+每次正式发布必须依次完成以下流程，不得跳过或颠倒：
+
+1. 检查并提交该版本全部源码、资源和文档，推送开发分支；禁止用未提交的工作区发布。
+2. 对最终提交执行适用的本地构建、测试及仓库检查，并等待 GitHub CI 通过。测试后若源码再变，必须重新提交并验证受影响检查。
+3. 通过 PR 合并到 `main`，确认发布提交已进入主分支、发布内容与主分支一致，再创建和推送新的版本标签。不得移动或覆盖已发布标签。
+4. 从标签对应的干净源码运行 `package.ps1 -Release`，核对包内 `BUILD-INFO.txt` 的提交、标签和构建组合，生成 SHA-256 校验文件。
+5. 创建对应标签的 Release，上传此次构建的运行包和校验文件，核对远端附件摘要后公开发布；交付发布链接及对应源码提交。
 
 正式发行应记录源码提交、版本、构建组合、工具链、测试结果、产物摘要和适用许可。包含未提交修改的本地包需明确说明，不能冒充对应某个已发布标签的精确构建。社区修改版应能辨认来源。
 

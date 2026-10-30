@@ -32,7 +32,7 @@ target_compile_options(QInEX-Link PRIVATE /utf-8 /W3 /EHsc)
 target_compile_definitions(QInEX-Link PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
 target_link_libraries(QInEX-Link PRIVATE
     pointer_desktop
-    setupapi winmm shell32 user32 gdi32 advapi32 shcore ws2_32
+    setupapi winmm shell32 user32 gdi32 advapi32 shcore ws2_32 mincore
     ole32 oleaut32 uiautomationcore d3d11 d2d1 dwrite dcomp dxgi
 )
 
@@ -68,4 +68,11 @@ if(BUILD_TESTING)
     target_include_directories(link_protocol_tests PRIVATE src)
     target_compile_options(link_protocol_tests PRIVATE /utf-8 /W4)
     add_test(NAME link_protocol COMMAND link_protocol_tests)
+    add_executable(link_capture_tests tests/capture_tests.cpp src/performance.cpp)
+    target_include_directories(link_capture_tests PRIVATE ../qinex-pointer/src)
+    target_compile_options(link_capture_tests PRIVATE /utf-8 /W4 /EHsc)
+    target_compile_definitions(link_capture_tests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(link_capture_tests PRIVATE user32 mincore)
+    add_test(NAME link_background_capture COMMAND link_capture_tests)
+    set_tests_properties(link_background_capture PROPERTIES TIMEOUT 15)
 endif()

@@ -125,7 +125,7 @@ namespace {
 #define C_ONACC qpointer::glass::Palette().accent
 
 constexpr int BASE_W = 1088, BASE_H = 880;
-constexpr wchar_t APP_VER[] = L"v0.1.13 · 合并版";
+constexpr wchar_t APP_VER[] = L"v0.1.14 · 合并版";
 constexpr int ID_DEVICE_PAGE = 9001, ID_POINTER_PAGE = 9002;
 HWND s_deviceButton{}, s_pointerButton{};
 bool s_pointerPage = false;
@@ -768,6 +768,7 @@ void setForwarding(bool on) {
     if (on && !link::txReady()) return;
     bool was = g.forwarding.exchange(on);
     g.grabbed = on && g.exclusive;
+    capture::wake();
     if (!on && was && capture::evtInput) {
         // UI 不同步等待 TIME_CRITICAL 发送线程；发送循环看到状态边沿后负责全抬起。
         // 直通档显式唤醒，确保停止不依赖下一个键鼠事件。

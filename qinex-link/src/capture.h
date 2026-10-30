@@ -15,6 +15,7 @@ namespace capture {
 
 void start();   // 起捕获线程(消息窗 + Raw Input + LL Hook;独占键盘由 Hook 直送)
 void stop();
+void wake();   // 转发状态改变时唤醒捕获消息泵，立即切换主动采样/空闲等待
 
 // 边沿事件:按键/鼠标键状态变化的快照,发送线程按序 flush,保证不丢按下/抬起沿
 struct Edge {
@@ -30,7 +31,7 @@ struct Motion {
     int dx;
     int dy;
     int wheel;
-    uint64_t atUs;   // 原始 WM_INPUT 入队时刻(毫秒时间扩展到 µs,同毫秒报告按 125µs 排序)
+    uint64_t atUs;   // 系统启动以来 µs；缓冲批内时刻为估计值，非硬件时间戳
 };
 bool popMotion(Motion& m);                        // 直通档:逐报告取走
 bool peekMotion(Motion& m);                       // 固定档:查看队首,不取走
